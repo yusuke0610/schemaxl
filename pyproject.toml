@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "schemaxl"
+version = "0.1.0.dev0"
+description = "Pydantic モデルを単一の真実として Excel 帳票を宣言的に生成するライブラリ"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Wada Yusuke" }]
+keywords = ["excel", "xlsx", "pydantic", "report", "openpyxl", "layout"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Office/Business",
+]
+dependencies = [
+    "pydantic>=2.0",
+    "openpyxl>=3.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5",
+    "mypy>=1.10",
+]
+
+[project.urls]
+Homepage = "https://github.com/wadayuusuke/schemaxl"
+Repository = "https://github.com/wadayuusuke/schemaxl"
+
+# src レイアウトを採用。配布パッケージは src/schemaxl 配下。
+[tool.hatch.build.targets.wheel]
+packages = ["src/schemaxl"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+src = ["src", "tests"]
+line-length = 100
+
+[tool.mypy]
+packages = ["schemaxl"]
+strict = true
