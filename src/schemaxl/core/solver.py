@@ -29,9 +29,7 @@ def resolve_row_heights(
     raise NotImplementedError
 
 
-def resolve_page_breaks(
-    table: Table, row_heights: dict[int, float], page: A4
-) -> list[int]:
+def resolve_page_breaks(table: Table, row_heights: dict[int, float], page: A4) -> list[int]:
     """`break_inside="avoid_row"` を尊重して改ページ位置を決定する。"""
     raise NotImplementedError
 
