@@ -13,9 +13,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Generic, Literal, TypeVar
+from typing import Any, Generic, Literal, TypeVar, get_args, get_type_hints
 
-from schemaxl.core.overflow import OverflowStrategy
+from schemaxl.core.overflow import OverflowStrategy, normalize
 from schemaxl.core.units import Length
 
 RowT = TypeVar("RowT")
@@ -94,6 +94,66 @@ class Table:
     bind: type[Any] | None = None
     break_inside: Literal["avoid_row", "auto"] = "avoid_row"
     repeat_header: bool = True
+
+
+# --- 列(モデルから抽出した solver 向けの中間表現)-----------------------
+
+
+@dataclass(frozen=True)
+class Column:
+    """モデルの 1 フィールドから抽出した列定義。
+
+    Annotated 内の `Layout` を読み取り、solver が参照しやすい形へ正規化したもの。
+    overflow はここでインスタンスへ正規化済み(`Wrap` / `Wrap()` の差を吸収)。
+    """
+
+    index: int
+    field_name: str
+    header: str
+    width: Width
+    overflow: OverflowStrategy | None
+    join: str | None
+
+
+def columns_of(model: type[Any]) -> list[Column]:
+    """Pydantic モデル(等)のフィールド宣言順に `Column` を抽出する。
+
+    各フィールドの `Annotated[..., Layout(...)]` から列を構成する。Layout が
+    付いていないフィールドは列にしない。width 省略時は `Auto()`、overflow は
+    `overflow.normalize` でインスタンスへ正規化する。
+    """
+    hints = get_type_hints(model, include_extras=True)
+    columns: list[Column] = []
+    index = 0
+    for name, hint in hints.items():
+        if not hasattr(hint, "__metadata__"):
+            continue
+        layout = next((m for m in get_args(hint)[1:] if isinstance(m, Layout)), None)
+        if layout is None:
+            continue
+        overflow = normalize(layout.overflow) if layout.overflow is not None else None
+        width = layout.width if layout.width is not None else Auto()
+        columns.append(Column(index, name, layout.header, width, overflow, layout.join))
+        index += 1
+    return columns
+
+
+def cell_text(column: Column, row: Any) -> str:
+    """1 セルに表示する文字列を得る。dict / モデルインスタンスの両方に対応。
+
+    list 値は `Layout.join`(未指定なら "、")で 1 セルへ結合する。
+    """
+    value = (
+        row.get(column.field_name)
+        if isinstance(row, dict)
+        else getattr(row, column.field_name, None)
+    )
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple)):
+        separator = column.join if column.join is not None else "、"
+        return separator.join(str(item) for item in value)
+    return str(value)
 
 
 # --- 帳票の宣言基底 -------------------------------------------------------

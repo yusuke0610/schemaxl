@@ -37,9 +37,13 @@ class PlacementPlan:
     """1 冊分の帳票の配置計画。
 
     solver の出力。backend はこれを読んで物理ファイルへ書き出す。
+    座標は 1 始まりのシート行 / 列。幅は Excel 列幅単位、高さは pt(Excel 行高単位)。
+    `dataclasses.asdict` + `json.dumps` で直列化可能な純データに保つ。
     """
 
     cells: list[CellPlacement] = field(default_factory=list)
     page_breaks: list[PageBreak] = field(default_factory=list)
     column_widths: dict[int, float] = field(default_factory=dict)
     row_heights: dict[int, float] = field(default_factory=dict)
+    # 各ページ先頭で繰り返す先頭行数(repeat_header)。印刷タイトル行に対応。
+    header_rows: int = 0

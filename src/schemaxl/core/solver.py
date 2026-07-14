@@ -6,34 +6,238 @@ PlacementPlan を構築する。**副作用を持たない純粋関数群**と�
 この純粋性が本ライブラリの核。ファイル I/O なしで単体テスト可能
 (tests/test_solver.py, tests/test_overflow.py を参照)。
 
-本ファイルは骨格のためロジックは未実装。
+内部計算はすべて **pt** で行い、Excel の単位へは plan 組み立て時(`solve`)に変換する。
+文字幅計測は `measure`(実フォント非依存の注入点)を通す。
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from schemaxl.core.model import A4, Table
-from schemaxl.core.plan import PlacementPlan
+from schemaxl.core.errors import LayoutError
+from schemaxl.core.model import A4, Column, Table, _Fill, cell_text, columns_of
+from schemaxl.core.model import Auto as AutoWidth
+from schemaxl.core.overflow import DEFAULT_FONT_PT, TextMeasurer, Wrap, default_measure, fit
+from schemaxl.core.plan import CellPlacement, PageBreak, PlacementPlan
+from schemaxl.core.units import mm, pt_to_excel_column_width, pt_to_excel_row_height
+
+# A4 の物理寸法(mm)。
+A4_WIDTH_MM = 210.0
+A4_HEIGHT_MM = 297.0
+
+# 行高 = 行内の行数 × フォント pt × この係数(行間)。
+LINE_HEIGHT_FACTOR = 1.2
 
 
-def resolve_column_widths(table: Table, rows: list[Any], page: A4) -> dict[int, float]:
-    """各列の幅を決定する(Auto / Fill と min 下限を解決)。"""
-    raise NotImplementedError
+def _printable_size_pt(page: A4) -> tuple[float, float]:
+    """ページの印字可能サイズ(幅, 高さ)を pt で返す。余白を差し引く。"""
+    width_mm, height_mm = A4_WIDTH_MM, A4_HEIGHT_MM
+    if page.orientation == "landscape":
+        width_mm, height_mm = height_mm, width_mm
+    margin_pt = page.margin.to_pt() if page.margin is not None else 0.0
+    width_pt = mm(width_mm).to_pt() - 2 * margin_pt
+    height_pt = mm(height_mm).to_pt() - 2 * margin_pt
+    return width_pt, height_pt
+
+
+def _columns(table: Table) -> list[Column]:
+    """table にバインドされた行モデルから列を取り出す。bind 必須。"""
+    if table.bind is None:
+        raise LayoutError("Table に行モデルがバインドされていない(bind / Report ジェネリクス)")
+    return columns_of(table.bind)
+
+
+def _content_width_pt(column: Column, rows: list[Any], measure: TextMeasurer) -> float:
+    """列の内容(ヘッダ + 全行)を 1 行で描いたときの最大幅 pt。"""
+    texts = [column.header, *(cell_text(column, row) for row in rows)]
+    return max((measure(text, DEFAULT_FONT_PT) for text in texts), default=0.0)
+
+
+def resolve_column_widths(
+    table: Table,
+    rows: list[Any],
+    page: A4,
+    *,
+    measure: TextMeasurer = default_measure,
+) -> dict[int, float]:
+    """各列の幅を pt で決定する(Auto / Fill と min 下限を解決)。
+
+    - Auto:  max(min, 内容幅)。
+    - Fill:  印字可能幅から Auto 列の合計を引いた残りを、Fill 列で等分。
+    - Auto 列の合計が印字可能幅を超える → LayoutError(仕様決定1)。
+    """
+    columns = _columns(table)
+    printable_width, _ = _printable_size_pt(page)
+
+    widths: dict[int, float] = {}
+    fill_indices: list[int] = []
+    fixed_total = 0.0
+    for column in columns:
+        if isinstance(column.width, _Fill):
+            fill_indices.append(column.index)
+            continue
+        min_pt = 0.0
+        if isinstance(column.width, AutoWidth) and column.width.min is not None:
+            min_pt = column.width.min.to_pt()
+        width = max(min_pt, _content_width_pt(column, rows, measure))
+        widths[column.index] = width
+        fixed_total += width
+
+    if fixed_total > printable_width:
+        overage = fixed_total - printable_width
+        raise LayoutError(
+            f"列幅合計 {fixed_total:.1f}pt が印字可能幅 {printable_width:.1f}pt "
+            f"を {overage:.1f}pt 超過",
+            overage_pt=overage,
+        )
+
+    if fill_indices:
+        each = (printable_width - fixed_total) / len(fill_indices)
+        for index in fill_indices:
+            widths[index] = each
+
+    return widths
+
+
+def _header_height_pt() -> float:
+    """ヘッダ行の高さ(1 行ぶん)。"""
+    return DEFAULT_FONT_PT * LINE_HEIGHT_FACTOR
+
+
+def _cell_height_pt(column: Column, row: Any, width_pt: float, measure: TextMeasurer) -> float:
+    """1 セルの高さ pt。overflow 戦略で行数・フォントが決まる。"""
+    if column.overflow is None:
+        # 戦略未指定は 1 行のまま(Auto 列は内容幅を確保済みなので溢れない)。
+        return DEFAULT_FONT_PT * LINE_HEIGHT_FACTOR
+    result = fit(
+        cell_text(column, row),
+        width_pt,
+        column.overflow,
+        base_font_pt=DEFAULT_FONT_PT,
+        measure=measure,
+    )
+    return result.line_count * result.font_pt * LINE_HEIGHT_FACTOR
 
 
 def resolve_row_heights(
-    table: Table, rows: list[Any], column_widths: dict[int, float]
+    table: Table,
+    rows: list[Any],
+    column_widths: dict[int, float],
+    *,
+    measure: TextMeasurer = default_measure,
 ) -> dict[int, float]:
-    """overflow 戦略(Wrap / Shrink)を適用して各行の高さを決定する。"""
-    raise NotImplementedError
+    """overflow 戦略(Wrap / Shrink)を適用して各行の高さを決定する。
+
+    キーはデータ行のインデックス(0 始まり)。行高は行内セルの高さの最大値。
+    """
+    columns = _columns(table)
+    heights: dict[int, float] = {}
+    for row_index, row in enumerate(rows):
+        heights[row_index] = max(
+            (_cell_height_pt(col, row, column_widths[col.index], measure) for col in columns),
+            default=DEFAULT_FONT_PT * LINE_HEIGHT_FACTOR,
+        )
+    return heights
 
 
 def resolve_page_breaks(table: Table, row_heights: dict[int, float], page: A4) -> list[int]:
-    """`break_inside="avoid_row"` を尊重して改ページ位置を決定する。"""
-    raise NotImplementedError
+    """`break_inside="avoid_row"` を尊重して改ページ位置を決定する。
+
+    戻り値は改ページを入れる直前のデータ行インデックスのリスト。行は途中で割らず、
+    収まらない行はページ先頭へ送る。repeat_header 時はヘッダ 1 行ぶんを毎ページ差し引く。
+    1 行だけでページに収まらない場合は LayoutError(仕様決定3)。
+    """
+    _, printable_height = _printable_size_pt(page)
+    available = printable_height - (_header_height_pt() if table.repeat_header else 0.0)
+
+    breaks: list[int] = []
+    used = 0.0
+    for row_index in sorted(row_heights):
+        height = row_heights[row_index]
+        if height > available:
+            overage = height - available
+            raise LayoutError(
+                f"行 {row_index} の高さ {height:.1f}pt がページ印字可能高 "
+                f"{available:.1f}pt を {overage:.1f}pt 超過",
+                overage_pt=overage,
+                row=row_index,
+            )
+        if used > 0.0 and used + height > available:
+            breaks.append(row_index)
+            used = 0.0
+        used += height
+    return breaks
 
 
-def solve(page: A4, table: Table, rows: list[Any]) -> PlacementPlan:
-    """制約解決のエントリポイント。PlacementPlan を返す純粋関数。"""
-    raise NotImplementedError
+def _resolved_cell(
+    column: Column, row: Any, width_pt: float, measure: TextMeasurer
+) -> tuple[str, float, bool]:
+    """セルの (表示文字列, 確定フォント pt, 折り返しフラグ) を求める。"""
+    text = cell_text(column, row)
+    if column.overflow is None:
+        return text, DEFAULT_FONT_PT, False
+    result = fit(text, width_pt, column.overflow, base_font_pt=DEFAULT_FONT_PT, measure=measure)
+    return text, result.font_pt, isinstance(column.overflow, Wrap)
+
+
+def solve(
+    page: A4,
+    table: Table,
+    rows: list[Any],
+    *,
+    measure: TextMeasurer = default_measure,
+) -> PlacementPlan:
+    """制約解決のエントリポイント。PlacementPlan を返す純粋関数。
+
+    列幅・行高・改ページを解決し、シート座標(1 始まり。1 行目ヘッダ、2 行目以降データ)
+    へ写して PlacementPlan を組み立てる。幅は Excel 列幅単位、高さは pt へ変換して載せる。
+    """
+    columns = _columns(table)
+    column_widths_pt = resolve_column_widths(table, rows, page, measure=measure)
+    row_heights_pt = resolve_row_heights(table, rows, column_widths_pt, measure=measure)
+    data_breaks = resolve_page_breaks(table, row_heights_pt, page)
+
+    plan = PlacementPlan(header_rows=1 if table.repeat_header else 0)
+    header_row = 1
+
+    # ヘッダ行。
+    for column in columns:
+        plan.cells.append(
+            CellPlacement(
+                row=header_row,
+                col=column.index + 1,
+                value=column.header,
+                font_pt=DEFAULT_FONT_PT,
+                wrap=False,
+            )
+        )
+    plan.row_heights[header_row] = pt_to_excel_row_height(_header_height_pt())
+
+    # データ行。
+    for data_index, row in enumerate(rows):
+        sheet_row = data_index + 2
+        plan.row_heights[sheet_row] = pt_to_excel_row_height(row_heights_pt[data_index])
+        for column in columns:
+            text, font_pt, wrap = _resolved_cell(
+                column, row, column_widths_pt[column.index], measure
+            )
+            plan.cells.append(
+                CellPlacement(
+                    row=sheet_row,
+                    col=column.index + 1,
+                    value=text,
+                    font_pt=font_pt,
+                    wrap=wrap,
+                )
+            )
+
+    # 列幅を Excel 単位へ。座標は 1 始まり列。
+    for column in columns:
+        plan.column_widths[column.index + 1] = pt_to_excel_column_width(
+            column_widths_pt[column.index]
+        )
+
+    # 改ページ位置をシート行へ変換(データ行 index → シート行)。
+    plan.page_breaks = [PageBreak(before_row=data_index + 2) for data_index in data_breaks]
+
+    return plan

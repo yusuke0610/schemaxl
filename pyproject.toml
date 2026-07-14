@@ -17,6 +17,7 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "License :: OSI Approved :: MIT License",
     "Topic :: Office/Business",
 ]
@@ -50,3 +51,9 @@ line-length = 100
 [tool.mypy]
 packages = ["schemaxl"]
 strict = true
+
+# openpyxl は型スタブを同梱しない。backend 層のみで使うため、この依存に限って
+# missing imports を無視する(他は strict のまま)。
+[[tool.mypy.overrides]]
+module = ["openpyxl.*"]
+ignore_missing_imports = true
