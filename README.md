@@ -152,11 +152,11 @@ pip install -e ".[dev]"
 
 ### MVP (v0.1)
 
-- [ ] `Table`(単一テーブルの帳票)
-- [ ] overflow 戦略: `Wrap`(折り返し)/ `Shrink`(フォント縮小、下限 pt 指定)
-- [ ] A4 縦・自動改ページ(`break_inside="avoid_row"`)
-- [ ] ヘッダ行の各ページ繰り返し
-- [ ] openpyxl バックエンド
+- [x] `Table`(単一テーブルの帳票)
+- [x] overflow 戦略: `Wrap`(折り返し)/ `Shrink`(フォント縮小、下限 pt 指定)
+- [x] A4 縦・自動改ページ(`break_inside="avoid_row"`)
+- [x] ヘッダ行の各ページ繰り返し
+- [x] openpyxl バックエンド
 
 ### 将来構想
 
