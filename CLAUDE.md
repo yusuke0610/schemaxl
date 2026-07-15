@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## プロジェクトの現状
 
-**骨格 (skeleton) 段階。** 公開 API のシグネチャ・型・docstring は揃っているが、
-実処理はほぼすべて `raise NotImplementedError` のまま。ここでの主な作業は
-「未実装の純粋関数を、既存の型シグネチャと docstring の契約どおりに埋めていく」こと。
+**MVP (v0.1) 実装済み。** units / overflow / solver / plan / openpyxl backend と
+`Report.render`(入力検証と solver → backend の配線)まで揃い、テストも全て有効。
+ここからの作業は MVP スコープ外の機能追加(README の「将来構想」)や品質改善が中心。
 新しい API を足す前に、README.md の「API スケッチ」節が設計の意図の一次情報である点に注意。
 
 ## 開発コマンド
@@ -30,8 +30,8 @@ CI(`.github/workflows/ci.yml`)は Python 3.10 / 3.11 / 3.12 で
 `ruff check` → `ruff format --check` → `mypy` → `pytest` の順に回す。
 `mypy` は `strict = true`、`ruff` は `line-length = 100`。この 4 つを緑にすることがマージ条件。
 
-現状テストは `@pytest.mark.skip("骨格")` で全スキップ。solver を実装したら対応する
-skip を外して有効化する運用。
+テストは units / overflow / solver(I/O レス)/ backend(読み戻し)/ render(E2E)
+の各層に対応する。solver 層のテストにファイル I/O や openpyxl を持ち込まないこと。
 
 ## アーキテクチャ
 
@@ -79,10 +79,8 @@ Pydantic モデル(単一の真実)
   `Shrink(min_pt=...)`(フォント縮小、下限あり)。引数なし戦略はクラス参照でも受け付け、
   `overflow.normalize` で必ずインスタンスへ正規化してから solver が参照する。
 
-## 実装を進めるときの順序の目安
+## スコープの目安
 
-依存の下流(値オブジェクト)から埋めると型が通りやすい:
-`units.py`(`Length.to_pt` / `mm` / `pt`)→ `overflow.normalize` → solver の各 `resolve_*`
-→ `solve` で `PlacementPlan` 組み立て → backend の `write_xlsx`。
-スコープは README の Roadmap「MVP (v0.1)」に定義済み(単一 `Table` / `Wrap` + `Shrink` /
-A4 縦・自動改ページ / ヘッダ繰り返し / openpyxl)。それ以外は「将来構想」であり MVP では作らない。
+MVP (v0.1) のスコープは README の Roadmap に定義済み(単一 `Table` / `Wrap` + `Shrink` /
+A4 縦・自動改ページ / ヘッダ繰り返し / openpyxl)で、実装済み。これを超える機能は
+README の「将来構想」に列挙されたものから、設計意図(API スケッチ)と整合する形で足す。

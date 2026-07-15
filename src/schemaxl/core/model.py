@@ -6,15 +6,17 @@
 - Report:  帳票の宣言基底クラス(ジェネリック)。
 - Table:   単一テーブルのボディ定義。
 
-本ファイルは骨格。制約解決や書き出しはここでは行わない(solver / backend が担当)。
+制約解決や書き出しの実処理はここでは行わない(solver / backend が担当)。
+`Report.render` は入力の検証と solver → backend への配線のみを受け持つ。
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
-from typing import Any, Generic, Literal, TypeVar, get_args, get_type_hints
+from dataclasses import dataclass, replace
+from typing import Any, Generic, Literal, TypeVar, get_args, get_origin, get_type_hints
 
+from schemaxl.core.errors import LayoutError
 from schemaxl.core.overflow import OverflowStrategy, normalize
 from schemaxl.core.units import Length
 
@@ -156,6 +158,30 @@ def cell_text(column: Column, row: Any) -> str:
     return str(value)
 
 
+def _field_names(model: type[Any]) -> list[str]:
+    """行モデルのフィールド名を宣言順で返す(Sequence 入力の位置マップに使う)。
+
+    Pydantic モデルは `model_fields`(ClassVar 等の非フィールド注釈を含まない)を
+    正とし、それ以外は型注釈の宣言順にフォールバックする。
+    """
+    fields: dict[str, Any] | None = getattr(model, "model_fields", None)
+    if fields is not None:
+        return list(fields)
+    return list(get_type_hints(model))
+
+
+def _coerce_row(model: type[Any], row: RowInput) -> Any:
+    """RowInput 1 件を行モデルへ変換する(Pydantic のデータ制約検証を通す)。"""
+    if isinstance(row, dict):
+        return model(**row)
+    names = _field_names(model)
+    if len(row) != len(names):
+        raise ValueError(
+            f"Sequence 行の要素数 {len(row)} が行モデルのフィールド数 {len(names)} と一致しない"
+        )
+    return model(**dict(zip(names, row)))
+
+
 # --- 帳票の宣言基底 -------------------------------------------------------
 
 
@@ -173,6 +199,19 @@ class Report(Generic[RowT]):
     body: Table
 
     @classmethod
+    def _row_model(cls) -> type[Any]:
+        """行モデルを解決する。`Table.bind` 優先、なければ `Report[RowT]` から推論。"""
+        if cls.body.bind is not None:
+            return cls.body.bind
+        for klass in cls.__mro__:
+            for base in getattr(klass, "__orig_bases__", ()):
+                if get_origin(base) is Report:
+                    arg = get_args(base)[0]
+                    if isinstance(arg, type):
+                        return arg
+        raise LayoutError("Table に行モデルがバインドされていない(bind / Report ジェネリクス)")
+
+    @classmethod
     def render(cls, rows: list[RowInput], path: str) -> None:
         """rows を帳票化して path (xlsx) に書き出す。
 
@@ -181,6 +220,12 @@ class Report(Generic[RowT]):
         行モデルへ変換され、Pydantic のデータ制約で検証される。
 
         パイプライン: モデル → solver(制約解決)→ PlacementPlan → backend(書き出し)。
-        骨格のため未実装。
         """
-        raise NotImplementedError
+        # solver は本モジュールへ依存するため、循環 import 回避で遅延 import する。
+        from schemaxl.backends.openpyxl_backend import write_xlsx
+        from schemaxl.core.solver import solve
+
+        row_model = cls._row_model()
+        table = cls.body if cls.body.bind is not None else replace(cls.body, bind=row_model)
+        validated = [_coerce_row(row_model, row) for row in rows]
+        write_xlsx(solve(cls.page, table, validated), path)
