@@ -18,26 +18,57 @@ from schemaxl.core.errors import LayoutError
 from schemaxl.core.model import A4, Column, Table, _Fill, cell_text, columns_of
 from schemaxl.core.model import Auto as AutoWidth
 from schemaxl.core.overflow import DEFAULT_FONT_PT, TextMeasurer, Wrap, default_measure, fit
-from schemaxl.core.plan import CellPlacement, PageBreak, PlacementPlan
+from schemaxl.core.plan import CellPlacement, CellRange, PageBreak, PageSetup, PlacementPlan
 from schemaxl.core.units import mm, pt_to_excel_column_width, pt_to_excel_row_height
 
-# A4 の物理寸法(mm)。
+# A4 の物理寸法(mm)と呼称。
 A4_WIDTH_MM = 210.0
 A4_HEIGHT_MM = 297.0
+A4_PAPER_NAME = "A4"
 
 # 行高 = 行内の行数 × フォント pt × この係数(行間)。
 LINE_HEIGHT_FACTOR = 1.2
 
 
-def _printable_size_pt(page: A4) -> tuple[float, float]:
-    """ページの印字可能サイズ(幅, 高さ)を pt で返す。余白を差し引く。"""
+def _paper_size_pt(page: A4) -> tuple[float, float]:
+    """向きを適用した用紙の物理サイズ(幅, 高さ)を pt で返す。"""
     width_mm, height_mm = A4_WIDTH_MM, A4_HEIGHT_MM
     if page.orientation == "landscape":
         width_mm, height_mm = height_mm, width_mm
-    margin_pt = page.margin.to_pt() if page.margin is not None else 0.0
-    width_pt = mm(width_mm).to_pt() - 2 * margin_pt
-    height_pt = mm(height_mm).to_pt() - 2 * margin_pt
-    return width_pt, height_pt
+    return mm(width_mm).to_pt(), mm(height_mm).to_pt()
+
+
+def _margin_pt(page: A4) -> float:
+    """余白を pt で返す。現状は 4 辺共通で、未指定なら 0。"""
+    return page.margin.to_pt() if page.margin is not None else 0.0
+
+
+def _printable_size_pt(page: A4) -> tuple[float, float]:
+    """ページの印字可能サイズ(幅, 高さ)を pt で返す。余白を差し引く。"""
+    width_pt, height_pt = _paper_size_pt(page)
+    margin_pt = _margin_pt(page)
+    return width_pt - 2 * margin_pt, height_pt - 2 * margin_pt
+
+
+def _page_setup(page: A4) -> PageSetup:
+    """ページ設定を backend 非依存の純データへ写す。
+
+    改ページ位置はここで決めた用紙・余白を前提に計算されている。同じ値を必ず
+    plan に載せ、backend 側の既定値が使われないようにする(でないと solver の
+    計算前提と実際の印刷結果が食い違う)。
+    """
+    width_pt, height_pt = _paper_size_pt(page)
+    margin_pt = _margin_pt(page)
+    return PageSetup(
+        paper=A4_PAPER_NAME,
+        orientation=page.orientation,
+        width_pt=width_pt,
+        height_pt=height_pt,
+        margin_top_pt=margin_pt,
+        margin_right_pt=margin_pt,
+        margin_bottom_pt=margin_pt,
+        margin_left_pt=margin_pt,
+    )
 
 
 def _columns(table: Table) -> list[Column]:
@@ -197,7 +228,10 @@ def solve(
     row_heights_pt = resolve_row_heights(table, rows, column_widths_pt, measure=measure)
     data_breaks = resolve_page_breaks(table, row_heights_pt, page)
 
-    plan = PlacementPlan(header_rows=1 if table.repeat_header else 0)
+    plan = PlacementPlan(
+        header_rows=1 if table.repeat_header else 0,
+        page=_page_setup(page),
+    )
     header_row = 1
 
     # ヘッダ行。
@@ -239,5 +273,14 @@ def solve(
 
     # 改ページ位置をシート行へ変換(データ行 index → シート行)。
     plan.page_breaks = [PageBreak(before_row=data_index + 2) for data_index in data_breaks]
+
+    # 印刷範囲はヘッダ行 + 全データ行 × 全列。列が無ければ指定しない。
+    if columns:
+        plan.print_area = CellRange(
+            first_row=header_row,
+            first_col=1,
+            last_row=header_row + len(rows),
+            last_col=len(columns),
+        )
 
     return plan

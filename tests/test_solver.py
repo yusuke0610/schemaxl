@@ -250,6 +250,68 @@ def test_solve_records_column_and_row_dimensions() -> None:
     assert set(plan.row_heights) == {1, 2, 3}
 
 
+def test_solve_records_the_page_setup_it_laid_out_against() -> None:
+    plan = _solve_allergy()
+    assert plan.page is not None
+    assert plan.page.paper == "A4"
+    assert plan.page.orientation == "portrait"
+    assert plan.page.width_pt == pytest.approx(mm(210).to_pt())
+    assert plan.page.height_pt == pytest.approx(mm(297).to_pt())
+    for margin in (
+        plan.page.margin_top_pt,
+        plan.page.margin_right_pt,
+        plan.page.margin_bottom_pt,
+        plan.page.margin_left_pt,
+    ):
+        assert margin == pytest.approx(mm(15).to_pt())
+
+
+def test_page_setup_is_consistent_with_the_printable_area_used_for_layout() -> None:
+    """plan のページ設定と、列幅・改ページの根拠になった印字可能領域が一致すること。
+
+    この 2 つがずれると backend が正しく書き出しても紙の上で改ページがずれる。
+    """
+    from schemaxl.core.solver import _printable_size_pt
+
+    plan = _solve_allergy()
+    assert plan.page is not None
+    printable_width, printable_height = _printable_size_pt(PAGE)
+    width = plan.page.width_pt - plan.page.margin_left_pt - plan.page.margin_right_pt
+    height = plan.page.height_pt - plan.page.margin_top_pt - plan.page.margin_bottom_pt
+    assert width == pytest.approx(printable_width)
+    assert height == pytest.approx(printable_height)
+
+
+def test_landscape_swaps_the_paper_dimensions() -> None:
+    from schemaxl.core.solver import solve
+
+    table = Table(bind=AllergyRow, repeat_header=True)
+    rows = [{"child_name": "山田", "allergens": ["卵"]}]
+    plan = solve(A4(orientation="landscape", margin=mm(15)), table, rows, measure=char_measure)
+    assert plan.page is not None
+    assert plan.page.orientation == "landscape"
+    assert plan.page.width_pt == pytest.approx(mm(297).to_pt())
+    assert plan.page.height_pt == pytest.approx(mm(210).to_pt())
+
+
+def test_page_margin_defaults_to_zero_when_unspecified() -> None:
+    from schemaxl.core.solver import solve
+
+    table = Table(bind=AllergyRow, repeat_header=True)
+    plan = solve(A4(), table, [{"child_name": "山", "allergens": []}], measure=char_measure)
+    assert plan.page is not None
+    assert plan.page.margin_top_pt == 0.0
+    assert plan.page.margin_left_pt == 0.0
+
+
+def test_solve_sets_print_area_over_header_and_data_rows() -> None:
+    plan = _solve_allergy()
+    # ヘッダ 1 行 + データ 2 行、2 列。
+    assert plan.print_area is not None
+    assert (plan.print_area.first_row, plan.print_area.first_col) == (1, 1)
+    assert (plan.print_area.last_row, plan.print_area.last_col) == (3, 2)
+
+
 def test_solve_output_is_json_serializable() -> None:
     import dataclasses
     import json
@@ -261,6 +323,9 @@ def test_solve_output_is_json_serializable() -> None:
     assert "cells" in restored
     assert "page_breaks" in restored
     assert "header_rows" in restored
+    # ページ設定・印刷範囲も純データであること(openpyxl 型を持ち込んでいない)。
+    assert restored["page"]["paper"] == "A4"
+    assert restored["print_area"]["last_col"] == 2
 
 
 # --- ヘルパ ---------------------------------------------------------------
