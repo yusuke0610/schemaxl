@@ -52,6 +52,21 @@ AllergyReport.render(rows, "report.xlsx")
 いずれの場合も、渡された行は内部で `AllergyRow` に変換され、Pydantic の
 データ制約(`max_length` 等)で検証されてからレンダリングされる。
 
+### 見切れたときの挙動(`strict`)
+
+`Shrink(min_pt=...)` の下限まで縮めても収まらない、といったレイアウト警告は
+solver が `PlacementPlan.warnings` に構造化して積む(行・列・フィールド名・超過量)。
+solver 自身は送出しない。それをどう扱うかは `render` が決める。
+
+```python
+AllergyReport.render(rows, "report.xlsx")                # strict=True(既定)
+AllergyReport.render(rows, "report.xlsx", strict=False)  # 警告を通知して書き出す
+```
+
+- `strict=True`(既定) … 警告が 1 件でもあれば `LayoutError` を送出し、**ファイルを書き出さない。**
+  見切れた帳票が黙って出来上がるのを防ぐ。
+- `strict=False` … `SchemaxlWarning` として通知したうえで書き出す。
+
 ## API スケッチ
 
 > 以下は設計の完成イメージです。**まだ動作しません**(骨格のみ)。
@@ -79,7 +94,14 @@ class AllergyReport(Report[AllergyRow]):
 
 - `Field(...)` は **データ制約**(Pydantic 本来の役割)。
 - `Layout(...)` は **レイアウト制約**。`Annotated` によって型の隣に同居させ、単一の真実に統合する。
-- `width` … `Auto(min=...)`(内容に応じ自動、下限指定可)/ `Fill`(残り幅を埋める)。
+- `width` … `Auto(min=..., max=...)`(内容に応じ自動、下限・上限を指定可)/
+  `Fill(min=...)`(残り幅を埋める、下限指定可)。引数なしなら `Fill` / `Fill()` どちらでも可
+  (内部でインスタンスに正規化)。残り幅が下限に満たない構成は `LayoutError`
+  (幅 0 の列を黙って作らない)。
+- **Auto 列は overflow を宣言したときだけ幅が頭打ちになる。** 上限は `max`、未指定なら `min`、
+  それも無ければ印字可能幅を列数で割った値。上限が無いと Auto 列は内容が 1 行で収まる幅を
+  常に確保してしまい、`Wrap` / `Shrink` の出番が来ない。overflow を宣言していない列は
+  切り詰める術がないので、従来どおり内容幅を確保する。
 - `overflow` … 収まらないときの戦略。`Wrap()`(折り返し)/ `Shrink(min_pt=...)`(フォント縮小、下限 pt 指定)。引数なしの戦略は `Wrap` / `Wrap()` どちらでも可(内部でインスタンスに正規化)。
 - `break_inside="avoid_row"` … 1 行の途中でページを割らない。
 - `repeat_header=True` … ヘッダ行を各ページの先頭で繰り返す。

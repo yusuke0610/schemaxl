@@ -16,7 +16,7 @@ import pytest
 from pydantic import BaseModel
 
 from schemaxl.core.errors import LayoutError
-from schemaxl.core.model import A4, Auto, Fill, Layout, Table
+from schemaxl.core.model import A4, Auto, Fill, Layout, Table, Width, normalize_width
 from schemaxl.core.overflow import Shrink, Wrap
 from schemaxl.core.units import mm
 
@@ -59,6 +59,62 @@ def test_auto_width_grows_to_content_when_larger_than_min() -> None:
     assert widths[0] == pytest.approx(10 * 11.0)
 
 
+def test_auto_width_is_capped_by_max() -> None:
+    class Row(BaseModel):
+        long: Annotated[str, Layout(header="長", width=Auto(max=mm(50)), overflow=Wrap())]
+
+    table = Table(bind=Row)
+    widths = resolve(table, [{"long": "あ" * 40}], measure=char_measure)
+    assert widths[0] == pytest.approx(mm(50).to_pt())
+
+
+def test_auto_width_falls_back_to_min_as_the_cap_when_overflow_is_declared() -> None:
+    # max 未指定でも overflow があれば上限を課す。でないと内容幅を丸取りして
+    # Wrap / Shrink が永久に発動しない。
+    class Row(BaseModel):
+        long: Annotated[str, Layout(header="長", width=Auto(min=mm(30)), overflow=Wrap())]
+
+    table = Table(bind=Row)
+    widths = resolve(table, [{"long": "あ" * 40}], measure=char_measure)
+    assert widths[0] == pytest.approx(mm(30).to_pt())
+
+
+def test_auto_width_is_uncapped_without_an_overflow_strategy() -> None:
+    # 戦略が無い列は切り詰める術がないので、従来どおり内容幅を確保する。
+    class Row(BaseModel):
+        long: Annotated[str, Layout(header="長", width=Auto(min=mm(30)))]
+
+    table = Table(bind=Row)
+    widths = resolve(table, [{"long": "あ" * 40}], measure=char_measure)
+    assert widths[0] == pytest.approx(40 * 11.0)
+
+
+def test_auto_width_without_bounds_falls_back_to_an_even_share() -> None:
+    class Row(BaseModel):
+        a: Annotated[str, Layout(header="a", width=Auto(), overflow=Wrap())]
+        b: Annotated[str, Layout(header="b", width=Auto(), overflow=Wrap())]
+
+    table = Table(bind=Row)
+    widths = resolve(table, [{"a": "あ" * 40, "b": "あ" * 40}], measure=char_measure)
+    assert widths[0] == pytest.approx(PRINTABLE_WIDTH_PT / 2)
+    assert widths[1] == pytest.approx(PRINTABLE_WIDTH_PT / 2)
+
+
+def test_auto_width_keeps_content_that_already_fits_under_the_cap() -> None:
+    class Row(BaseModel):
+        short: Annotated[str, Layout(header="短", width=Auto(max=mm(50)), overflow=Wrap())]
+
+    table = Table(bind=Row)
+    widths = resolve(table, [{"short": "あい"}], measure=char_measure)
+    # ヘッダ "短" 1 文字 と本文 2 文字。上限に届かないので内容幅のまま。
+    assert widths[0] == pytest.approx(2 * 11.0)
+
+
+def test_auto_max_below_min_is_rejected() -> None:
+    with pytest.raises(ValueError, match="max"):
+        Auto(min=mm(50), max=mm(30))
+
+
 def test_fill_column_takes_the_remaining_width() -> None:
     class Row(BaseModel):
         code: Annotated[str, Layout(header="コード", width=Auto(min=mm(30)))]
@@ -98,6 +154,75 @@ def test_fixed_columns_exceeding_printable_width_raise_layout_error() -> None:
     assert "超過" in str(exc.value)
 
 
+def test_fill_column_without_room_for_its_minimum_raises_layout_error() -> None:
+    # 残り幅が最小幅に足りないなら、幅 0 の列を黙って作らず落とす。
+    class Row(BaseModel):
+        big: Annotated[str, Layout(header="大", width=Auto(min=mm(180)))]
+        rest: Annotated[str, Layout(header="残", width=Fill)]
+
+    from schemaxl.core.solver import MIN_COLUMN_WIDTH_PT
+
+    table = Table(bind=Row)
+    with pytest.raises(LayoutError) as exc:
+        resolve(table, [{"big": "x", "rest": "y"}], measure=zero_measure)
+
+    remaining = PRINTABLE_WIDTH_PT - mm(180).to_pt()
+    assert exc.value.overage_pt == pytest.approx(MIN_COLUMN_WIDTH_PT - remaining)
+    assert "不足" in str(exc.value)
+
+
+def test_fill_column_is_never_narrower_than_its_declared_minimum() -> None:
+    class Row(BaseModel):
+        big: Annotated[str, Layout(header="大", width=Auto(min=mm(100)))]
+        rest: Annotated[str, Layout(header="残", width=Fill(min=mm(60)))]
+
+    table = Table(bind=Row)
+    widths = resolve(table, [{"big": "x", "rest": "y"}], measure=zero_measure)
+    assert widths[1] >= mm(60).to_pt()
+    assert widths[1] == pytest.approx(PRINTABLE_WIDTH_PT - mm(100).to_pt())
+
+
+def test_fill_columns_receive_their_minimums_then_share_the_surplus_equally() -> None:
+    class Row(BaseModel):
+        a: Annotated[str, Layout(header="a", width=Fill(min=mm(20)))]
+        b: Annotated[str, Layout(header="b", width=Fill(min=mm(80)))]
+
+    table = Table(bind=Row)
+    widths = resolve(table, [{"a": "x", "b": "y"}], measure=zero_measure)
+    # 余りは等分されるので、幅の差は下限の差そのものになる。
+    assert widths[1] - widths[0] == pytest.approx(mm(80).to_pt() - mm(20).to_pt())
+    assert widths[0] + widths[1] == pytest.approx(PRINTABLE_WIDTH_PT)
+
+
+def test_fill_class_reference_and_instance_are_equivalent() -> None:
+    class ByClass(BaseModel):
+        a: Annotated[str, Layout(header="a", width=Fill)]
+
+    class ByInstance(BaseModel):
+        a: Annotated[str, Layout(header="a", width=Fill())]
+
+    rows = [{"a": "x"}]
+    assert resolve(Table(bind=ByClass), rows, measure=zero_measure) == resolve(
+        Table(bind=ByInstance), rows, measure=zero_measure
+    )
+
+
+def test_normalize_width_instantiates_class_references() -> None:
+    assert normalize_width(Fill) == Fill()
+    assert normalize_width(Auto) == Auto()
+    assert normalize_width(Auto(min=mm(10))) == Auto(min=mm(10))
+
+
+def test_normalize_width_rejects_non_width() -> None:
+    with pytest.raises(TypeError):
+        normalize_width("Fill")  # type: ignore[arg-type]
+
+
+def test_width_subclasses_share_a_common_base() -> None:
+    assert isinstance(Fill(), Width)
+    assert isinstance(Auto(), Width)
+
+
 # --- 第4段: 行高解決 -----------------------------------------------------
 
 
@@ -111,6 +236,21 @@ def test_wrap_row_height_reflects_wrapped_line_count() -> None:
     # 幅 30pt。char_measure・font 11pt では 1 行 2 文字。5 文字 → 3 行。
     heights = resolve_row_heights(table, [{"name": "あいうえお"}], {0: 30.0}, measure=char_measure)
     assert heights[0] == pytest.approx(3 * 11.0 * LINE_HEIGHT_FACTOR)
+
+
+def test_wrap_in_an_auto_column_actually_increases_the_row_height() -> None:
+    """Auto 列でも Wrap が効くこと(内容幅を丸取りして戦略が死んでいた回帰)。"""
+    from schemaxl.core.solver import resolve_column_widths, resolve_row_heights
+
+    class Row(BaseModel):
+        long: Annotated[str, Layout(header="長", width=Auto(min=mm(30)), overflow=Wrap())]
+
+    table = Table(bind=Row)
+    rows = [{"long": "あ" * 40}]
+    widths = resolve_column_widths(table, rows, PAGE, measure=char_measure)
+    heights = resolve_row_heights(table, rows, widths, measure=char_measure)
+    # 幅 30mm(85.0pt)に 11pt の文字は 7 文字ぶん。40 文字なら 6 行。
+    assert heights[0] == pytest.approx(6 * 11.0 * 1.2)
 
 
 def test_shrink_row_height_stays_single_line() -> None:
@@ -250,6 +390,101 @@ def test_solve_records_column_and_row_dimensions() -> None:
     assert set(plan.row_heights) == {1, 2, 3}
 
 
+def test_solve_records_the_page_setup_it_laid_out_against() -> None:
+    plan = _solve_allergy()
+    assert plan.page is not None
+    assert plan.page.paper == "A4"
+    assert plan.page.orientation == "portrait"
+    assert plan.page.width_pt == pytest.approx(mm(210).to_pt())
+    assert plan.page.height_pt == pytest.approx(mm(297).to_pt())
+    for margin in (
+        plan.page.margin_top_pt,
+        plan.page.margin_right_pt,
+        plan.page.margin_bottom_pt,
+        plan.page.margin_left_pt,
+    ):
+        assert margin == pytest.approx(mm(15).to_pt())
+
+
+def test_page_setup_is_consistent_with_the_printable_area_used_for_layout() -> None:
+    """plan のページ設定と、列幅・改ページの根拠になった印字可能領域が一致すること。
+
+    この 2 つがずれると backend が正しく書き出しても紙の上で改ページがずれる。
+    """
+    from schemaxl.core.solver import _printable_size_pt
+
+    plan = _solve_allergy()
+    assert plan.page is not None
+    printable_width, printable_height = _printable_size_pt(PAGE)
+    width = plan.page.width_pt - plan.page.margin_left_pt - plan.page.margin_right_pt
+    height = plan.page.height_pt - plan.page.margin_top_pt - plan.page.margin_bottom_pt
+    assert width == pytest.approx(printable_width)
+    assert height == pytest.approx(printable_height)
+
+
+def test_landscape_swaps_the_paper_dimensions() -> None:
+    from schemaxl.core.solver import solve
+
+    table = Table(bind=AllergyRow, repeat_header=True)
+    rows = [{"child_name": "山田", "allergens": ["卵"]}]
+    plan = solve(A4(orientation="landscape", margin=mm(15)), table, rows, measure=char_measure)
+    assert plan.page is not None
+    assert plan.page.orientation == "landscape"
+    assert plan.page.width_pt == pytest.approx(mm(297).to_pt())
+    assert plan.page.height_pt == pytest.approx(mm(210).to_pt())
+
+
+def test_page_margin_defaults_to_zero_when_unspecified() -> None:
+    from schemaxl.core.solver import solve
+
+    table = Table(bind=AllergyRow, repeat_header=True)
+    plan = solve(A4(), table, [{"child_name": "山", "allergens": []}], measure=char_measure)
+    assert plan.page is not None
+    assert plan.page.margin_top_pt == 0.0
+    assert plan.page.margin_left_pt == 0.0
+
+
+def test_solve_sets_print_area_over_header_and_data_rows() -> None:
+    plan = _solve_allergy()
+    # ヘッダ 1 行 + データ 2 行、2 列。
+    assert plan.print_area is not None
+    assert (plan.print_area.first_row, plan.print_area.first_col) == (1, 1)
+    assert (plan.print_area.last_row, plan.print_area.last_col) == (3, 2)
+
+
+def test_solve_records_overflow_warnings_with_coordinates() -> None:
+    """収まらなかったことが plan に構造化されて残ること(捨てられていた回帰)。"""
+    from schemaxl.core.solver import solve
+
+    class Row(BaseModel):
+        s: Annotated[str, Layout(header="s", width=Auto(min=mm(20)), overflow=Shrink(min_pt=8))]
+
+    plan = solve(PAGE, Table(bind=Row), [{"s": "あ" * 30}], measure=char_measure)
+
+    assert len(plan.warnings) == 1
+    warning = plan.warnings[0]
+    assert warning.kind == "overflow"
+    assert warning.field_name == "s"
+    # ヘッダが 1 行目なので、最初のデータ行はシート 2 行目 / 1 列目。
+    assert (warning.row, warning.col) == (2, 1)
+    assert warning.overage_pt == pytest.approx(30 * 8.0 - mm(20).to_pt())
+
+
+def test_solve_does_not_raise_for_warnings() -> None:
+    """警告は純データ。送出するかどうかは render の strict が決める。"""
+    from schemaxl.core.solver import solve
+
+    class Row(BaseModel):
+        s: Annotated[str, Layout(header="s", width=Auto(min=mm(20)), overflow=Shrink(min_pt=8))]
+
+    plan = solve(PAGE, Table(bind=Row), [{"s": "あ" * 30}], measure=char_measure)
+    assert plan.cells  # 例外にはならず、計画は最後まで組み立てられる
+
+
+def test_solve_records_no_warnings_when_everything_fits() -> None:
+    assert _solve_allergy().warnings == []
+
+
 def test_solve_output_is_json_serializable() -> None:
     import dataclasses
     import json
@@ -261,6 +496,10 @@ def test_solve_output_is_json_serializable() -> None:
     assert "cells" in restored
     assert "page_breaks" in restored
     assert "header_rows" in restored
+    # ページ設定・印刷範囲も純データであること(openpyxl 型を持ち込んでいない)。
+    assert restored["page"]["paper"] == "A4"
+    assert restored["print_area"]["last_col"] == 2
+    assert restored["warnings"] == []
 
 
 # --- ヘルパ ---------------------------------------------------------------

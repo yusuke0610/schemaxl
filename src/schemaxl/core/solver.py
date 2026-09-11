@@ -12,32 +12,69 @@ PlacementPlan を構築する。**副作用を持たない純粋関数群**と�
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
-from schemaxl.core.errors import LayoutError
-from schemaxl.core.model import A4, Column, Table, _Fill, cell_text, columns_of
+from schemaxl.core.errors import LayoutError, LayoutWarning
+from schemaxl.core.model import A4, Column, Table, cell_text, columns_of
 from schemaxl.core.model import Auto as AutoWidth
+from schemaxl.core.model import Fill as FillWidth
 from schemaxl.core.overflow import DEFAULT_FONT_PT, TextMeasurer, Wrap, default_measure, fit
-from schemaxl.core.plan import CellPlacement, PageBreak, PlacementPlan
+from schemaxl.core.plan import CellPlacement, CellRange, PageBreak, PageSetup, PlacementPlan
 from schemaxl.core.units import mm, pt_to_excel_column_width, pt_to_excel_row_height
 
-# A4 の物理寸法(mm)。
+# A4 の物理寸法(mm)と呼称。
 A4_WIDTH_MM = 210.0
 A4_HEIGHT_MM = 297.0
+A4_PAPER_NAME = "A4"
 
 # 行高 = 行内の行数 × フォント pt × この係数(行間)。
 LINE_HEIGHT_FACTOR = 1.2
 
+# 列の既定の最小幅。基準フォントの全角 1 文字ぶん。これを下回ると折り返しが
+# 1 文字ずつに退化し、帳票として読めなくなる。
+MIN_COLUMN_WIDTH_PT = DEFAULT_FONT_PT
 
-def _printable_size_pt(page: A4) -> tuple[float, float]:
-    """ページの印字可能サイズ(幅, 高さ)を pt で返す。余白を差し引く。"""
+
+def _paper_size_pt(page: A4) -> tuple[float, float]:
+    """向きを適用した用紙の物理サイズ(幅, 高さ)を pt で返す。"""
     width_mm, height_mm = A4_WIDTH_MM, A4_HEIGHT_MM
     if page.orientation == "landscape":
         width_mm, height_mm = height_mm, width_mm
-    margin_pt = page.margin.to_pt() if page.margin is not None else 0.0
-    width_pt = mm(width_mm).to_pt() - 2 * margin_pt
-    height_pt = mm(height_mm).to_pt() - 2 * margin_pt
-    return width_pt, height_pt
+    return mm(width_mm).to_pt(), mm(height_mm).to_pt()
+
+
+def _margin_pt(page: A4) -> float:
+    """余白を pt で返す。現状は 4 辺共通で、未指定なら 0。"""
+    return page.margin.to_pt() if page.margin is not None else 0.0
+
+
+def _printable_size_pt(page: A4) -> tuple[float, float]:
+    """ページの印字可能サイズ(幅, 高さ)を pt で返す。余白を差し引く。"""
+    width_pt, height_pt = _paper_size_pt(page)
+    margin_pt = _margin_pt(page)
+    return width_pt - 2 * margin_pt, height_pt - 2 * margin_pt
+
+
+def _page_setup(page: A4) -> PageSetup:
+    """ページ設定を backend 非依存の純データへ写す。
+
+    改ページ位置はここで決めた用紙・余白を前提に計算されている。同じ値を必ず
+    plan に載せ、backend 側の既定値が使われないようにする(でないと solver の
+    計算前提と実際の印刷結果が食い違う)。
+    """
+    width_pt, height_pt = _paper_size_pt(page)
+    margin_pt = _margin_pt(page)
+    return PageSetup(
+        paper=A4_PAPER_NAME,
+        orientation=page.orientation,
+        width_pt=width_pt,
+        height_pt=height_pt,
+        margin_top_pt=margin_pt,
+        margin_right_pt=margin_pt,
+        margin_bottom_pt=margin_pt,
+        margin_left_pt=margin_pt,
+    )
 
 
 def _columns(table: Table) -> list[Column]:
@@ -45,6 +82,31 @@ def _columns(table: Table) -> list[Column]:
     if table.bind is None:
         raise LayoutError("Table に行モデルがバインドされていない(bind / Report ジェネリクス)")
     return columns_of(table.bind)
+
+
+def _auto_cap_pt(
+    width: AutoWidth, has_overflow: bool, printable_width: float, column_count: int
+) -> float | None:
+    """Auto 列の内容幅に課す上限 pt。None なら上限なし(内容幅をそのまま使う)。
+
+    `max` の明示が最優先。未指定でも overflow 戦略が宣言されていれば上限を課す。
+    課さないと Auto 列は内容が 1 行で収まる幅を常に確保し、Wrap も Shrink も
+    発動しないまま終わる。既定の上限は `min`、それも無ければ印字可能幅を列数で
+    割った値(Fill 列も頭数に入る粗い見積もりだが、あくまで最後の受け皿)。
+    overflow が無い列は切り詰める術がないので、従来どおり内容幅を確保する。
+    """
+    if width.max is not None:
+        return width.max.to_pt()
+    if not has_overflow:
+        return None
+    if width.min is not None:
+        return width.min.to_pt()
+    return printable_width / column_count
+
+
+def _fill_min_pt(width: FillWidth) -> float:
+    """Fill 列の下限幅 pt。未指定ならライブラリ既定の最小幅。"""
+    return width.min.to_pt() if width.min is not None else MIN_COLUMN_WIDTH_PT
 
 
 def _content_width_pt(column: Column, rows: list[Any], measure: TextMeasurer) -> float:
@@ -62,24 +124,36 @@ def resolve_column_widths(
 ) -> dict[int, float]:
     """各列の幅を pt で決定する(Auto / Fill と min 下限を解決)。
 
-    - Auto:  max(min, 内容幅)。
-    - Fill:  印字可能幅から Auto 列の合計を引いた残りを、Fill 列で等分。
+    - Auto:  max(min, min(内容幅, 上限))。上限は `_auto_cap_pt` が決める。
+    - Fill:  まず各列へ下限(`Fill.min`、未指定なら `MIN_COLUMN_WIDTH_PT`)を配り、
+             残りを等分して上乗せする。下限が等しければ従来どおりの等分になる。
     - Auto 列の合計が印字可能幅を超える → LayoutError(仕様決定1)。
+    - Fill 列の下限を賄う残り幅がない → LayoutError。幅 0 の列を黙って作ると、
+      折り返しが 1 文字ずつに退化した帳票がそのまま出力されてしまう。
     """
     columns = _columns(table)
     printable_width, _ = _printable_size_pt(page)
 
     widths: dict[int, float] = {}
-    fill_indices: list[int] = []
+    # Fill 指定は幅決定を後回しにする。narrowing を保つため指定も一緒に持つ。
+    fill_columns: list[tuple[Column, FillWidth]] = []
     fixed_total = 0.0
     for column in columns:
-        if isinstance(column.width, _Fill):
-            fill_indices.append(column.index)
+        if isinstance(column.width, FillWidth):
+            fill_columns.append((column, column.width))
             continue
         min_pt = 0.0
-        if isinstance(column.width, AutoWidth) and column.width.min is not None:
-            min_pt = column.width.min.to_pt()
-        width = max(min_pt, _content_width_pt(column, rows, measure))
+        cap_pt: float | None = None
+        if isinstance(column.width, AutoWidth):
+            if column.width.min is not None:
+                min_pt = column.width.min.to_pt()
+            cap_pt = _auto_cap_pt(
+                column.width, column.overflow is not None, printable_width, len(columns)
+            )
+        content_pt = _content_width_pt(column, rows, measure)
+        if cap_pt is not None:
+            content_pt = min(content_pt, cap_pt)
+        width = max(min_pt, content_pt)
         widths[column.index] = width
         fixed_total += width
 
@@ -91,10 +165,20 @@ def resolve_column_widths(
             overage_pt=overage,
         )
 
-    if fill_indices:
-        each = (printable_width - fixed_total) / len(fill_indices)
-        for index in fill_indices:
-            widths[index] = each
+    if fill_columns:
+        minimums = [_fill_min_pt(spec) for _, spec in fill_columns]
+        remaining = printable_width - fixed_total
+        required = sum(minimums)
+        if remaining < required:
+            shortfall = required - remaining
+            raise LayoutError(
+                f"Fill 列 {len(fill_columns)} 個の最小幅合計 {required:.1f}pt に対し、"
+                f"残り幅は {remaining:.1f}pt しかない({shortfall:.1f}pt 不足)",
+                overage_pt=shortfall,
+            )
+        surplus = (remaining - required) / len(fill_columns)
+        for (column, _), minimum in zip(fill_columns, minimums):
+            widths[column.index] = minimum + surplus
 
     return widths
 
@@ -169,15 +253,47 @@ def resolve_page_breaks(table: Table, row_heights: dict[int, float], page: A4) -
     return breaks
 
 
+@dataclass(frozen=True)
+class _ResolvedCell:
+    """1 セルの確定結果。warnings は座標つきで plan へ積む。"""
+
+    text: str
+    font_pt: float
+    wrap: bool
+    warnings: tuple[LayoutWarning, ...] = ()
+
+
 def _resolved_cell(
-    column: Column, row: Any, width_pt: float, measure: TextMeasurer
-) -> tuple[str, float, bool]:
-    """セルの (表示文字列, 確定フォント pt, 折り返しフラグ) を求める。"""
+    column: Column, row: Any, sheet_row: int, width_pt: float, measure: TextMeasurer
+) -> _ResolvedCell:
+    """セルの表示文字列・確定フォント・折り返しフラグと、収まらなかった警告を求める。"""
     text = cell_text(column, row)
     if column.overflow is None:
-        return text, DEFAULT_FONT_PT, False
+        return _ResolvedCell(text=text, font_pt=DEFAULT_FONT_PT, wrap=False)
     result = fit(text, width_pt, column.overflow, base_font_pt=DEFAULT_FONT_PT, measure=measure)
-    return text, result.font_pt, isinstance(column.overflow, Wrap)
+
+    # fit は「収まらなかった」ことをメッセージで返すだけで座標を知らない。
+    # ここで行・列・フィールド名と超過量を付けて構造化する。
+    warnings: tuple[LayoutWarning, ...] = ()
+    if result.warnings:
+        overage_pt = measure(text, result.font_pt) - width_pt
+        warnings = tuple(
+            LayoutWarning(
+                message=message,
+                kind="overflow",
+                field_name=column.field_name,
+                row=sheet_row,
+                col=column.index + 1,
+                overage_pt=overage_pt if overage_pt > 0 else None,
+            )
+            for message in result.warnings
+        )
+    return _ResolvedCell(
+        text=text,
+        font_pt=result.font_pt,
+        wrap=isinstance(column.overflow, Wrap),
+        warnings=warnings,
+    )
 
 
 def solve(
@@ -197,7 +313,10 @@ def solve(
     row_heights_pt = resolve_row_heights(table, rows, column_widths_pt, measure=measure)
     data_breaks = resolve_page_breaks(table, row_heights_pt, page)
 
-    plan = PlacementPlan(header_rows=1 if table.repeat_header else 0)
+    plan = PlacementPlan(
+        header_rows=1 if table.repeat_header else 0,
+        page=_page_setup(page),
+    )
     header_row = 1
 
     # ヘッダ行。
@@ -218,16 +337,17 @@ def solve(
         sheet_row = data_index + 2
         plan.row_heights[sheet_row] = pt_to_excel_row_height(row_heights_pt[data_index])
         for column in columns:
-            text, font_pt, wrap = _resolved_cell(
-                column, row, column_widths_pt[column.index], measure
+            resolved = _resolved_cell(
+                column, row, sheet_row, column_widths_pt[column.index], measure
             )
+            plan.warnings.extend(resolved.warnings)
             plan.cells.append(
                 CellPlacement(
                     row=sheet_row,
                     col=column.index + 1,
-                    value=text,
-                    font_pt=font_pt,
-                    wrap=wrap,
+                    value=resolved.text,
+                    font_pt=resolved.font_pt,
+                    wrap=resolved.wrap,
                 )
             )
 
@@ -239,5 +359,14 @@ def solve(
 
     # 改ページ位置をシート行へ変換(データ行 index → シート行)。
     plan.page_breaks = [PageBreak(before_row=data_index + 2) for data_index in data_breaks]
+
+    # 印刷範囲はヘッダ行 + 全データ行 × 全列。列が無ければ指定しない。
+    if columns:
+        plan.print_area = CellRange(
+            first_row=header_row,
+            first_col=1,
+            last_row=header_row + len(rows),
+            last_col=len(columns),
+        )
 
     return plan

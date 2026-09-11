@@ -12,11 +12,12 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Generic, Literal, TypeVar, get_args, get_origin, get_type_hints
 
-from schemaxl.core.errors import LayoutError
+from schemaxl.core.errors import LayoutError, LayoutWarning, SchemaxlWarning
 from schemaxl.core.overflow import OverflowStrategy, normalize
 from schemaxl.core.units import Length
 
@@ -37,18 +38,47 @@ class Width:
 
 @dataclass(frozen=True)
 class Auto(Width):
-    """内容に応じて自動決定する。min で下限を指定できる。"""
+    """内容に応じて自動決定する。min / max で下限・上限を指定できる。
+
+    `max` を指定すると内容幅がそこで頭打ちになり、はみ出した分は overflow 戦略
+    (`Wrap` / `Shrink`)が引き取る。`max` 未指定でも overflow が宣言されていれば
+    solver が既定の上限を課す。上限が無いと Auto 列は常に内容が 1 行で収まる幅を
+    確保してしまい、戦略の出番が原理的に来ないため。
+    """
+
+    min: Length | None = None
+    max: Length | None = None
+
+    def __post_init__(self) -> None:
+        if self.min is not None and self.max is not None and self.max < self.min:
+            raise ValueError(
+                f"Auto の max({self.max.to_pt():.1f}pt) が "
+                f"min({self.min.to_pt():.1f}pt) を下回っている"
+            )
+
+
+@dataclass(frozen=True)
+class Fill(Width):
+    """行の残り幅を埋める。min で下限を指定できる。
+
+    下限を割り込む構成は solver が `LayoutError` にする。幅 0 の列を黙って作ると、
+    折り返しが 1 文字ずつに退化した帳票が出てしまうため。
+    """
 
     min: Length | None = None
 
 
-@dataclass(frozen=True)
-class _Fill(Width):
-    """行の残り幅を埋める。"""
+def normalize_width(width: Width | type[Width]) -> Width:
+    """列幅指定を常にインスタンスへ正規化する。
 
-
-# `width=Fill` のようにシングルトンとして使う。
-Fill: _Fill = _Fill()
+    `width=Fill`(クラス参照)も `width=Fill()` も受け付ける。overflow 戦略の
+    `overflow.normalize` と同じ扱いに揃えてある。
+    """
+    if isinstance(width, Width):
+        return width
+    if isinstance(width, type) and issubclass(width, Width):
+        return width()  # 引数なしで構築できる指定のみ成功。
+    raise TypeError(f"列幅指定ではない: {width!r}")
 
 
 # --- レイアウト制約メタデータ ---------------------------------------------
@@ -64,7 +94,8 @@ class Layout:
     """
 
     header: str
-    width: Width | None = None
+    # 引数なしの指定はクラス参照でも可(normalize_width で正規化)。
+    width: Width | type[Width] | None = None
     # 引数なし戦略はクラス参照でも可(overflow.normalize で正規化)。
     overflow: OverflowStrategy | type[OverflowStrategy] | None = None
     join: str | None = None  # list 値を 1 セルへ結合する際の区切り文字
@@ -106,7 +137,7 @@ class Column:
     """モデルの 1 フィールドから抽出した列定義。
 
     Annotated 内の `Layout` を読み取り、solver が参照しやすい形へ正規化したもの。
-    overflow はここでインスタンスへ正規化済み(`Wrap` / `Wrap()` の差を吸収)。
+    width / overflow はここでインスタンスへ正規化済み(`Fill` / `Fill()` の差を吸収)。
     """
 
     index: int
@@ -121,8 +152,8 @@ def columns_of(model: type[Any]) -> list[Column]:
     """Pydantic モデル(等)のフィールド宣言順に `Column` を抽出する。
 
     各フィールドの `Annotated[..., Layout(...)]` から列を構成する。Layout が
-    付いていないフィールドは列にしない。width 省略時は `Auto()`、overflow は
-    `overflow.normalize` でインスタンスへ正規化する。
+    付いていないフィールドは列にしない。width 省略時は `Auto()`。width / overflow は
+    それぞれ `normalize_width` / `overflow.normalize` でインスタンスへ正規化する。
     """
     hints = get_type_hints(model, include_extras=True)
     columns: list[Column] = []
@@ -134,7 +165,7 @@ def columns_of(model: type[Any]) -> list[Column]:
         if layout is None:
             continue
         overflow = normalize(layout.overflow) if layout.overflow is not None else None
-        width = layout.width if layout.width is not None else Auto()
+        width = normalize_width(layout.width) if layout.width is not None else Auto()
         columns.append(Column(index, name, layout.header, width, overflow, layout.join))
         index += 1
     return columns
@@ -182,6 +213,29 @@ def _coerce_row(model: type[Any], row: RowInput) -> Any:
     return model(**dict(zip(names, row)))
 
 
+def _report_warnings(layout_warnings: list[LayoutWarning], *, strict: bool) -> None:
+    """solver が積んだ警告を strict に応じて扱う。
+
+    solver は警告を送出せず `PlacementPlan.warnings` に積むだけなので、それを
+    「落とす」のか「知らせて続行する」のかを決めるのがここ。
+
+    - strict=True:  1 件でもあれば `LayoutError`。見切れた帳票を黙って書き出さない。
+    - strict=False: `SchemaxlWarning` として通知し、書き出しは続行する。
+    """
+    if not layout_warnings:
+        return
+    if strict:
+        first = layout_warnings[0]
+        raise LayoutError(
+            f"レイアウト警告 {len(layout_warnings)} 件。最初の 1 件"
+            f"(行 {first.row} / 列 {first.col}): {first.message}"
+            " — 警告を許容して書き出すなら strict=False",
+            overage_pt=first.overage_pt,
+        )
+    for layout_warning in layout_warnings:
+        warnings.warn(layout_warning.message, SchemaxlWarning, stacklevel=3)
+
+
 # --- 帳票の宣言基底 -------------------------------------------------------
 
 
@@ -212,12 +266,17 @@ class Report(Generic[RowT]):
         raise LayoutError("Table に行モデルがバインドされていない(bind / Report ジェネリクス)")
 
     @classmethod
-    def render(cls, rows: list[RowInput], path: str) -> None:
+    def render(cls, rows: list[RowInput], path: str, *, strict: bool = True) -> None:
         """rows を帳票化して path (xlsx) に書き出す。
 
         rows は dict のリスト(キー → フィールド名)またはタプル / リストの
         リスト(フィールド宣言順で位置マップ)を受け付ける。各行は内部で
         行モデルへ変換され、Pydantic のデータ制約で検証される。
+
+        `strict=True`(既定)は、`Shrink` の下限でも収まらない等のレイアウト警告が
+        1 件でもあれば `LayoutError` を送出し、ファイルを書き出さない。見切れた帳票を
+        黙って出さないための既定。警告を承知で書き出したい場合は `strict=False`
+        (`SchemaxlWarning` として通知したうえで続行する)。
 
         パイプライン: モデル → solver(制約解決)→ PlacementPlan → backend(書き出し)。
         """
@@ -228,4 +287,6 @@ class Report(Generic[RowT]):
         row_model = cls._row_model()
         table = cls.body if cls.body.bind is not None else replace(cls.body, bind=row_model)
         validated = [_coerce_row(row_model, row) for row in rows]
-        write_xlsx(solve(cls.page, table, validated), path)
+        plan = solve(cls.page, table, validated)
+        _report_warnings(plan.warnings, strict=strict)
+        write_xlsx(plan, path)

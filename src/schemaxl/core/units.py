@@ -97,3 +97,8 @@ def pt_to_excel_row_height(value_pt: float) -> float:
 def pt_to_excel_column_width(value_pt: float) -> float:
     """pt を Excel の列幅単位(標準フォントの文字数)へ変換する。"""
     return value_pt / PT_PER_COLUMN_WIDTH_UNIT
+
+
+def pt_to_excel_margin(value_pt: float) -> float:
+    """pt を Excel のページ余白単位(インチ)へ変換する。"""
+    return value_pt / PT_PER_INCH
