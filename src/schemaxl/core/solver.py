@@ -15,8 +15,9 @@ from __future__ import annotations
 from typing import Any
 
 from schemaxl.core.errors import LayoutError
-from schemaxl.core.model import A4, Column, Table, _Fill, cell_text, columns_of
+from schemaxl.core.model import A4, Column, Table, cell_text, columns_of
 from schemaxl.core.model import Auto as AutoWidth
+from schemaxl.core.model import Fill as FillWidth
 from schemaxl.core.overflow import DEFAULT_FONT_PT, TextMeasurer, Wrap, default_measure, fit
 from schemaxl.core.plan import CellPlacement, CellRange, PageBreak, PageSetup, PlacementPlan
 from schemaxl.core.units import mm, pt_to_excel_column_width, pt_to_excel_row_height
@@ -28,6 +29,10 @@ A4_PAPER_NAME = "A4"
 
 # 行高 = 行内の行数 × フォント pt × この係数(行間)。
 LINE_HEIGHT_FACTOR = 1.2
+
+# 列の既定の最小幅。基準フォントの全角 1 文字ぶん。これを下回ると折り返しが
+# 1 文字ずつに退化し、帳票として読めなくなる。
+MIN_COLUMN_WIDTH_PT = DEFAULT_FONT_PT
 
 
 def _paper_size_pt(page: A4) -> tuple[float, float]:
@@ -78,6 +83,11 @@ def _columns(table: Table) -> list[Column]:
     return columns_of(table.bind)
 
 
+def _fill_min_pt(width: FillWidth) -> float:
+    """Fill 列の下限幅 pt。未指定ならライブラリ既定の最小幅。"""
+    return width.min.to_pt() if width.min is not None else MIN_COLUMN_WIDTH_PT
+
+
 def _content_width_pt(column: Column, rows: list[Any], measure: TextMeasurer) -> float:
     """列の内容(ヘッダ + 全行)を 1 行で描いたときの最大幅 pt。"""
     texts = [column.header, *(cell_text(column, row) for row in rows)]
@@ -94,18 +104,22 @@ def resolve_column_widths(
     """各列の幅を pt で決定する(Auto / Fill と min 下限を解決)。
 
     - Auto:  max(min, 内容幅)。
-    - Fill:  印字可能幅から Auto 列の合計を引いた残りを、Fill 列で等分。
+    - Fill:  まず各列へ下限(`Fill.min`、未指定なら `MIN_COLUMN_WIDTH_PT`)を配り、
+             残りを等分して上乗せする。下限が等しければ従来どおりの等分になる。
     - Auto 列の合計が印字可能幅を超える → LayoutError(仕様決定1)。
+    - Fill 列の下限を賄う残り幅がない → LayoutError。幅 0 の列を黙って作ると、
+      折り返しが 1 文字ずつに退化した帳票がそのまま出力されてしまう。
     """
     columns = _columns(table)
     printable_width, _ = _printable_size_pt(page)
 
     widths: dict[int, float] = {}
-    fill_indices: list[int] = []
+    # Fill 指定は幅決定を後回しにする。narrowing を保つため指定も一緒に持つ。
+    fill_columns: list[tuple[Column, FillWidth]] = []
     fixed_total = 0.0
     for column in columns:
-        if isinstance(column.width, _Fill):
-            fill_indices.append(column.index)
+        if isinstance(column.width, FillWidth):
+            fill_columns.append((column, column.width))
             continue
         min_pt = 0.0
         if isinstance(column.width, AutoWidth) and column.width.min is not None:
@@ -122,10 +136,20 @@ def resolve_column_widths(
             overage_pt=overage,
         )
 
-    if fill_indices:
-        each = (printable_width - fixed_total) / len(fill_indices)
-        for index in fill_indices:
-            widths[index] = each
+    if fill_columns:
+        minimums = [_fill_min_pt(spec) for _, spec in fill_columns]
+        remaining = printable_width - fixed_total
+        required = sum(minimums)
+        if remaining < required:
+            shortfall = required - remaining
+            raise LayoutError(
+                f"Fill 列 {len(fill_columns)} 個の最小幅合計 {required:.1f}pt に対し、"
+                f"残り幅は {remaining:.1f}pt しかない({shortfall:.1f}pt 不足)",
+                overage_pt=shortfall,
+            )
+        surplus = (remaining - required) / len(fill_columns)
+        for (column, _), minimum in zip(fill_columns, minimums):
+            widths[column.index] = minimum + surplus
 
     return widths
 

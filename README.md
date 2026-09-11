@@ -79,7 +79,9 @@ class AllergyReport(Report[AllergyRow]):
 
 - `Field(...)` は **データ制約**(Pydantic 本来の役割)。
 - `Layout(...)` は **レイアウト制約**。`Annotated` によって型の隣に同居させ、単一の真実に統合する。
-- `width` … `Auto(min=...)`(内容に応じ自動、下限指定可)/ `Fill`(残り幅を埋める)。
+- `width` … `Auto(min=...)`(内容に応じ自動、下限指定可)/ `Fill(min=...)`(残り幅を埋める、下限指定可)。
+  引数なしなら `Fill` / `Fill()` どちらでも可(内部でインスタンスに正規化)。残り幅が下限に
+  満たない構成は `LayoutError`(幅 0 の列を黙って作らない)。
 - `overflow` … 収まらないときの戦略。`Wrap()`(折り返し)/ `Shrink(min_pt=...)`(フォント縮小、下限 pt 指定)。引数なしの戦略は `Wrap` / `Wrap()` どちらでも可(内部でインスタンスに正規化)。
 - `break_inside="avoid_row"` … 1 行の途中でページを割らない。
 - `repeat_header=True` … ヘッダ行を各ページの先頭で繰り返す。

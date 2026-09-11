@@ -43,12 +43,27 @@ class Auto(Width):
 
 
 @dataclass(frozen=True)
-class _Fill(Width):
-    """行の残り幅を埋める。"""
+class Fill(Width):
+    """行の残り幅を埋める。min で下限を指定できる。
+
+    下限を割り込む構成は solver が `LayoutError` にする。幅 0 の列を黙って作ると、
+    折り返しが 1 文字ずつに退化した帳票が出てしまうため。
+    """
+
+    min: Length | None = None
 
 
-# `width=Fill` のようにシングルトンとして使う。
-Fill: _Fill = _Fill()
+def normalize_width(width: Width | type[Width]) -> Width:
+    """列幅指定を常にインスタンスへ正規化する。
+
+    `width=Fill`(クラス参照)も `width=Fill()` も受け付ける。overflow 戦略の
+    `overflow.normalize` と同じ扱いに揃えてある。
+    """
+    if isinstance(width, Width):
+        return width
+    if isinstance(width, type) and issubclass(width, Width):
+        return width()  # 引数なしで構築できる指定のみ成功。
+    raise TypeError(f"列幅指定ではない: {width!r}")
 
 
 # --- レイアウト制約メタデータ ---------------------------------------------
@@ -64,7 +79,8 @@ class Layout:
     """
 
     header: str
-    width: Width | None = None
+    # 引数なしの指定はクラス参照でも可(normalize_width で正規化)。
+    width: Width | type[Width] | None = None
     # 引数なし戦略はクラス参照でも可(overflow.normalize で正規化)。
     overflow: OverflowStrategy | type[OverflowStrategy] | None = None
     join: str | None = None  # list 値を 1 セルへ結合する際の区切り文字
@@ -106,7 +122,7 @@ class Column:
     """モデルの 1 フィールドから抽出した列定義。
 
     Annotated 内の `Layout` を読み取り、solver が参照しやすい形へ正規化したもの。
-    overflow はここでインスタンスへ正規化済み(`Wrap` / `Wrap()` の差を吸収)。
+    width / overflow はここでインスタンスへ正規化済み(`Fill` / `Fill()` の差を吸収)。
     """
 
     index: int
@@ -121,8 +137,8 @@ def columns_of(model: type[Any]) -> list[Column]:
     """Pydantic モデル(等)のフィールド宣言順に `Column` を抽出する。
 
     各フィールドの `Annotated[..., Layout(...)]` から列を構成する。Layout が
-    付いていないフィールドは列にしない。width 省略時は `Auto()`、overflow は
-    `overflow.normalize` でインスタンスへ正規化する。
+    付いていないフィールドは列にしない。width 省略時は `Auto()`。width / overflow は
+    それぞれ `normalize_width` / `overflow.normalize` でインスタンスへ正規化する。
     """
     hints = get_type_hints(model, include_extras=True)
     columns: list[Column] = []
@@ -134,7 +150,7 @@ def columns_of(model: type[Any]) -> list[Column]:
         if layout is None:
             continue
         overflow = normalize(layout.overflow) if layout.overflow is not None else None
-        width = layout.width if layout.width is not None else Auto()
+        width = normalize_width(layout.width) if layout.width is not None else Auto()
         columns.append(Column(index, name, layout.header, width, overflow, layout.join))
         index += 1
     return columns

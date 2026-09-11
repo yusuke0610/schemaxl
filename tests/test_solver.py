@@ -16,7 +16,7 @@ import pytest
 from pydantic import BaseModel
 
 from schemaxl.core.errors import LayoutError
-from schemaxl.core.model import A4, Auto, Fill, Layout, Table
+from schemaxl.core.model import A4, Auto, Fill, Layout, Table, Width, normalize_width
 from schemaxl.core.overflow import Shrink, Wrap
 from schemaxl.core.units import mm
 
@@ -96,6 +96,75 @@ def test_fixed_columns_exceeding_printable_width_raise_layout_error() -> None:
     expected_overage = 2 * mm(150).to_pt() - PRINTABLE_WIDTH_PT
     assert exc.value.overage_pt == pytest.approx(expected_overage)
     assert "超過" in str(exc.value)
+
+
+def test_fill_column_without_room_for_its_minimum_raises_layout_error() -> None:
+    # 残り幅が最小幅に足りないなら、幅 0 の列を黙って作らず落とす。
+    class Row(BaseModel):
+        big: Annotated[str, Layout(header="大", width=Auto(min=mm(180)))]
+        rest: Annotated[str, Layout(header="残", width=Fill)]
+
+    from schemaxl.core.solver import MIN_COLUMN_WIDTH_PT
+
+    table = Table(bind=Row)
+    with pytest.raises(LayoutError) as exc:
+        resolve(table, [{"big": "x", "rest": "y"}], measure=zero_measure)
+
+    remaining = PRINTABLE_WIDTH_PT - mm(180).to_pt()
+    assert exc.value.overage_pt == pytest.approx(MIN_COLUMN_WIDTH_PT - remaining)
+    assert "不足" in str(exc.value)
+
+
+def test_fill_column_is_never_narrower_than_its_declared_minimum() -> None:
+    class Row(BaseModel):
+        big: Annotated[str, Layout(header="大", width=Auto(min=mm(100)))]
+        rest: Annotated[str, Layout(header="残", width=Fill(min=mm(60)))]
+
+    table = Table(bind=Row)
+    widths = resolve(table, [{"big": "x", "rest": "y"}], measure=zero_measure)
+    assert widths[1] >= mm(60).to_pt()
+    assert widths[1] == pytest.approx(PRINTABLE_WIDTH_PT - mm(100).to_pt())
+
+
+def test_fill_columns_receive_their_minimums_then_share_the_surplus_equally() -> None:
+    class Row(BaseModel):
+        a: Annotated[str, Layout(header="a", width=Fill(min=mm(20)))]
+        b: Annotated[str, Layout(header="b", width=Fill(min=mm(80)))]
+
+    table = Table(bind=Row)
+    widths = resolve(table, [{"a": "x", "b": "y"}], measure=zero_measure)
+    # 余りは等分されるので、幅の差は下限の差そのものになる。
+    assert widths[1] - widths[0] == pytest.approx(mm(80).to_pt() - mm(20).to_pt())
+    assert widths[0] + widths[1] == pytest.approx(PRINTABLE_WIDTH_PT)
+
+
+def test_fill_class_reference_and_instance_are_equivalent() -> None:
+    class ByClass(BaseModel):
+        a: Annotated[str, Layout(header="a", width=Fill)]
+
+    class ByInstance(BaseModel):
+        a: Annotated[str, Layout(header="a", width=Fill())]
+
+    rows = [{"a": "x"}]
+    assert resolve(Table(bind=ByClass), rows, measure=zero_measure) == resolve(
+        Table(bind=ByInstance), rows, measure=zero_measure
+    )
+
+
+def test_normalize_width_instantiates_class_references() -> None:
+    assert normalize_width(Fill) == Fill()
+    assert normalize_width(Auto) == Auto()
+    assert normalize_width(Auto(min=mm(10))) == Auto(min=mm(10))
+
+
+def test_normalize_width_rejects_non_width() -> None:
+    with pytest.raises(TypeError):
+        normalize_width("Fill")  # type: ignore[arg-type]
+
+
+def test_width_subclasses_share_a_common_base() -> None:
+    assert isinstance(Fill(), Width)
+    assert isinstance(Auto(), Width)
 
 
 # --- 第4段: 行高解決 -----------------------------------------------------
