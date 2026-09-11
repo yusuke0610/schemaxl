@@ -83,6 +83,26 @@ def _columns(table: Table) -> list[Column]:
     return columns_of(table.bind)
 
 
+def _auto_cap_pt(
+    width: AutoWidth, has_overflow: bool, printable_width: float, column_count: int
+) -> float | None:
+    """Auto 列の内容幅に課す上限 pt。None なら上限なし(内容幅をそのまま使う)。
+
+    `max` の明示が最優先。未指定でも overflow 戦略が宣言されていれば上限を課す。
+    課さないと Auto 列は内容が 1 行で収まる幅を常に確保し、Wrap も Shrink も
+    発動しないまま終わる。既定の上限は `min`、それも無ければ印字可能幅を列数で
+    割った値(Fill 列も頭数に入る粗い見積もりだが、あくまで最後の受け皿)。
+    overflow が無い列は切り詰める術がないので、従来どおり内容幅を確保する。
+    """
+    if width.max is not None:
+        return width.max.to_pt()
+    if not has_overflow:
+        return None
+    if width.min is not None:
+        return width.min.to_pt()
+    return printable_width / column_count
+
+
 def _fill_min_pt(width: FillWidth) -> float:
     """Fill 列の下限幅 pt。未指定ならライブラリ既定の最小幅。"""
     return width.min.to_pt() if width.min is not None else MIN_COLUMN_WIDTH_PT
@@ -103,7 +123,7 @@ def resolve_column_widths(
 ) -> dict[int, float]:
     """各列の幅を pt で決定する(Auto / Fill と min 下限を解決)。
 
-    - Auto:  max(min, 内容幅)。
+    - Auto:  max(min, min(内容幅, 上限))。上限は `_auto_cap_pt` が決める。
     - Fill:  まず各列へ下限(`Fill.min`、未指定なら `MIN_COLUMN_WIDTH_PT`)を配り、
              残りを等分して上乗せする。下限が等しければ従来どおりの等分になる。
     - Auto 列の合計が印字可能幅を超える → LayoutError(仕様決定1)。
@@ -122,9 +142,17 @@ def resolve_column_widths(
             fill_columns.append((column, column.width))
             continue
         min_pt = 0.0
-        if isinstance(column.width, AutoWidth) and column.width.min is not None:
-            min_pt = column.width.min.to_pt()
-        width = max(min_pt, _content_width_pt(column, rows, measure))
+        cap_pt: float | None = None
+        if isinstance(column.width, AutoWidth):
+            if column.width.min is not None:
+                min_pt = column.width.min.to_pt()
+            cap_pt = _auto_cap_pt(
+                column.width, column.overflow is not None, printable_width, len(columns)
+            )
+        content_pt = _content_width_pt(column, rows, measure)
+        if cap_pt is not None:
+            content_pt = min(content_pt, cap_pt)
+        width = max(min_pt, content_pt)
         widths[column.index] = width
         fixed_total += width
 

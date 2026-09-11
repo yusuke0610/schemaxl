@@ -59,6 +59,62 @@ def test_auto_width_grows_to_content_when_larger_than_min() -> None:
     assert widths[0] == pytest.approx(10 * 11.0)
 
 
+def test_auto_width_is_capped_by_max() -> None:
+    class Row(BaseModel):
+        long: Annotated[str, Layout(header="長", width=Auto(max=mm(50)), overflow=Wrap())]
+
+    table = Table(bind=Row)
+    widths = resolve(table, [{"long": "あ" * 40}], measure=char_measure)
+    assert widths[0] == pytest.approx(mm(50).to_pt())
+
+
+def test_auto_width_falls_back_to_min_as_the_cap_when_overflow_is_declared() -> None:
+    # max 未指定でも overflow があれば上限を課す。でないと内容幅を丸取りして
+    # Wrap / Shrink が永久に発動しない。
+    class Row(BaseModel):
+        long: Annotated[str, Layout(header="長", width=Auto(min=mm(30)), overflow=Wrap())]
+
+    table = Table(bind=Row)
+    widths = resolve(table, [{"long": "あ" * 40}], measure=char_measure)
+    assert widths[0] == pytest.approx(mm(30).to_pt())
+
+
+def test_auto_width_is_uncapped_without_an_overflow_strategy() -> None:
+    # 戦略が無い列は切り詰める術がないので、従来どおり内容幅を確保する。
+    class Row(BaseModel):
+        long: Annotated[str, Layout(header="長", width=Auto(min=mm(30)))]
+
+    table = Table(bind=Row)
+    widths = resolve(table, [{"long": "あ" * 40}], measure=char_measure)
+    assert widths[0] == pytest.approx(40 * 11.0)
+
+
+def test_auto_width_without_bounds_falls_back_to_an_even_share() -> None:
+    class Row(BaseModel):
+        a: Annotated[str, Layout(header="a", width=Auto(), overflow=Wrap())]
+        b: Annotated[str, Layout(header="b", width=Auto(), overflow=Wrap())]
+
+    table = Table(bind=Row)
+    widths = resolve(table, [{"a": "あ" * 40, "b": "あ" * 40}], measure=char_measure)
+    assert widths[0] == pytest.approx(PRINTABLE_WIDTH_PT / 2)
+    assert widths[1] == pytest.approx(PRINTABLE_WIDTH_PT / 2)
+
+
+def test_auto_width_keeps_content_that_already_fits_under_the_cap() -> None:
+    class Row(BaseModel):
+        short: Annotated[str, Layout(header="短", width=Auto(max=mm(50)), overflow=Wrap())]
+
+    table = Table(bind=Row)
+    widths = resolve(table, [{"short": "あい"}], measure=char_measure)
+    # ヘッダ "短" 1 文字 と本文 2 文字。上限に届かないので内容幅のまま。
+    assert widths[0] == pytest.approx(2 * 11.0)
+
+
+def test_auto_max_below_min_is_rejected() -> None:
+    with pytest.raises(ValueError, match="max"):
+        Auto(min=mm(50), max=mm(30))
+
+
 def test_fill_column_takes_the_remaining_width() -> None:
     class Row(BaseModel):
         code: Annotated[str, Layout(header="コード", width=Auto(min=mm(30)))]
@@ -180,6 +236,21 @@ def test_wrap_row_height_reflects_wrapped_line_count() -> None:
     # 幅 30pt。char_measure・font 11pt では 1 行 2 文字。5 文字 → 3 行。
     heights = resolve_row_heights(table, [{"name": "あいうえお"}], {0: 30.0}, measure=char_measure)
     assert heights[0] == pytest.approx(3 * 11.0 * LINE_HEIGHT_FACTOR)
+
+
+def test_wrap_in_an_auto_column_actually_increases_the_row_height() -> None:
+    """Auto 列でも Wrap が効くこと(内容幅を丸取りして戦略が死んでいた回帰)。"""
+    from schemaxl.core.solver import resolve_column_widths, resolve_row_heights
+
+    class Row(BaseModel):
+        long: Annotated[str, Layout(header="長", width=Auto(min=mm(30)), overflow=Wrap())]
+
+    table = Table(bind=Row)
+    rows = [{"long": "あ" * 40}]
+    widths = resolve_column_widths(table, rows, PAGE, measure=char_measure)
+    heights = resolve_row_heights(table, rows, widths, measure=char_measure)
+    # 幅 30mm(85.0pt)に 11pt の文字は 7 文字ぶん。40 文字なら 6 行。
+    assert heights[0] == pytest.approx(6 * 11.0 * 1.2)
 
 
 def test_shrink_row_height_stays_single_line() -> None:

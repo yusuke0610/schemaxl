@@ -37,9 +37,23 @@ class Width:
 
 @dataclass(frozen=True)
 class Auto(Width):
-    """内容に応じて自動決定する。min で下限を指定できる。"""
+    """内容に応じて自動決定する。min / max で下限・上限を指定できる。
+
+    `max` を指定すると内容幅がそこで頭打ちになり、はみ出した分は overflow 戦略
+    (`Wrap` / `Shrink`)が引き取る。`max` 未指定でも overflow が宣言されていれば
+    solver が既定の上限を課す。上限が無いと Auto 列は常に内容が 1 行で収まる幅を
+    確保してしまい、戦略の出番が原理的に来ないため。
+    """
 
     min: Length | None = None
+    max: Length | None = None
+
+    def __post_init__(self) -> None:
+        if self.min is not None and self.max is not None and self.max < self.min:
+            raise ValueError(
+                f"Auto の max({self.max.to_pt():.1f}pt) が "
+                f"min({self.min.to_pt():.1f}pt) を下回っている"
+            )
 
 
 @dataclass(frozen=True)
