@@ -452,6 +452,39 @@ def test_solve_sets_print_area_over_header_and_data_rows() -> None:
     assert (plan.print_area.last_row, plan.print_area.last_col) == (3, 2)
 
 
+def test_solve_records_overflow_warnings_with_coordinates() -> None:
+    """収まらなかったことが plan に構造化されて残ること(捨てられていた回帰)。"""
+    from schemaxl.core.solver import solve
+
+    class Row(BaseModel):
+        s: Annotated[str, Layout(header="s", width=Auto(min=mm(20)), overflow=Shrink(min_pt=8))]
+
+    plan = solve(PAGE, Table(bind=Row), [{"s": "あ" * 30}], measure=char_measure)
+
+    assert len(plan.warnings) == 1
+    warning = plan.warnings[0]
+    assert warning.kind == "overflow"
+    assert warning.field_name == "s"
+    # ヘッダが 1 行目なので、最初のデータ行はシート 2 行目 / 1 列目。
+    assert (warning.row, warning.col) == (2, 1)
+    assert warning.overage_pt == pytest.approx(30 * 8.0 - mm(20).to_pt())
+
+
+def test_solve_does_not_raise_for_warnings() -> None:
+    """警告は純データ。送出するかどうかは render の strict が決める。"""
+    from schemaxl.core.solver import solve
+
+    class Row(BaseModel):
+        s: Annotated[str, Layout(header="s", width=Auto(min=mm(20)), overflow=Shrink(min_pt=8))]
+
+    plan = solve(PAGE, Table(bind=Row), [{"s": "あ" * 30}], measure=char_measure)
+    assert plan.cells  # 例外にはならず、計画は最後まで組み立てられる
+
+
+def test_solve_records_no_warnings_when_everything_fits() -> None:
+    assert _solve_allergy().warnings == []
+
+
 def test_solve_output_is_json_serializable() -> None:
     import dataclasses
     import json
@@ -466,6 +499,7 @@ def test_solve_output_is_json_serializable() -> None:
     # ページ設定・印刷範囲も純データであること(openpyxl 型を持ち込んでいない)。
     assert restored["page"]["paper"] == "A4"
     assert restored["print_area"]["last_col"] == 2
+    assert restored["warnings"] == []
 
 
 # --- ヘルパ ---------------------------------------------------------------

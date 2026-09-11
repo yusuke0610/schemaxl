@@ -12,9 +12,10 @@ PlacementPlan を構築する。**副作用を持たない純粋関数群**と�
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
-from schemaxl.core.errors import LayoutError
+from schemaxl.core.errors import LayoutError, LayoutWarning
 from schemaxl.core.model import A4, Column, Table, cell_text, columns_of
 from schemaxl.core.model import Auto as AutoWidth
 from schemaxl.core.model import Fill as FillWidth
@@ -252,15 +253,47 @@ def resolve_page_breaks(table: Table, row_heights: dict[int, float], page: A4) -
     return breaks
 
 
+@dataclass(frozen=True)
+class _ResolvedCell:
+    """1 セルの確定結果。warnings は座標つきで plan へ積む。"""
+
+    text: str
+    font_pt: float
+    wrap: bool
+    warnings: tuple[LayoutWarning, ...] = ()
+
+
 def _resolved_cell(
-    column: Column, row: Any, width_pt: float, measure: TextMeasurer
-) -> tuple[str, float, bool]:
-    """セルの (表示文字列, 確定フォント pt, 折り返しフラグ) を求める。"""
+    column: Column, row: Any, sheet_row: int, width_pt: float, measure: TextMeasurer
+) -> _ResolvedCell:
+    """セルの表示文字列・確定フォント・折り返しフラグと、収まらなかった警告を求める。"""
     text = cell_text(column, row)
     if column.overflow is None:
-        return text, DEFAULT_FONT_PT, False
+        return _ResolvedCell(text=text, font_pt=DEFAULT_FONT_PT, wrap=False)
     result = fit(text, width_pt, column.overflow, base_font_pt=DEFAULT_FONT_PT, measure=measure)
-    return text, result.font_pt, isinstance(column.overflow, Wrap)
+
+    # fit は「収まらなかった」ことをメッセージで返すだけで座標を知らない。
+    # ここで行・列・フィールド名と超過量を付けて構造化する。
+    warnings: tuple[LayoutWarning, ...] = ()
+    if result.warnings:
+        overage_pt = measure(text, result.font_pt) - width_pt
+        warnings = tuple(
+            LayoutWarning(
+                message=message,
+                kind="overflow",
+                field_name=column.field_name,
+                row=sheet_row,
+                col=column.index + 1,
+                overage_pt=overage_pt if overage_pt > 0 else None,
+            )
+            for message in result.warnings
+        )
+    return _ResolvedCell(
+        text=text,
+        font_pt=result.font_pt,
+        wrap=isinstance(column.overflow, Wrap),
+        warnings=warnings,
+    )
 
 
 def solve(
@@ -304,16 +337,17 @@ def solve(
         sheet_row = data_index + 2
         plan.row_heights[sheet_row] = pt_to_excel_row_height(row_heights_pt[data_index])
         for column in columns:
-            text, font_pt, wrap = _resolved_cell(
-                column, row, column_widths_pt[column.index], measure
+            resolved = _resolved_cell(
+                column, row, sheet_row, column_widths_pt[column.index], measure
             )
+            plan.warnings.extend(resolved.warnings)
             plan.cells.append(
                 CellPlacement(
                     row=sheet_row,
                     col=column.index + 1,
-                    value=text,
-                    font_pt=font_pt,
-                    wrap=wrap,
+                    value=resolved.text,
+                    font_pt=resolved.font_pt,
+                    wrap=resolved.wrap,
                 )
             )
 

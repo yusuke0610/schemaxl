@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from schemaxl.core.errors import LayoutWarning
+
 
 @dataclass(frozen=True)
 class CellPlacement:
@@ -86,3 +88,5 @@ class PlacementPlan:
     page: PageSetup | None = None
     # 印刷範囲。None なら backend は指定しない(Excel の既定は使用済み範囲)。
     print_area: CellRange | None = None
+    # 見切れ等の警告。solver は積むだけで送出しない。扱いは render の strict が決める。
+    warnings: list[LayoutWarning] = field(default_factory=list)

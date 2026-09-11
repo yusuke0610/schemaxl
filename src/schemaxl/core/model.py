@@ -12,11 +12,12 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Generic, Literal, TypeVar, get_args, get_origin, get_type_hints
 
-from schemaxl.core.errors import LayoutError
+from schemaxl.core.errors import LayoutError, LayoutWarning, SchemaxlWarning
 from schemaxl.core.overflow import OverflowStrategy, normalize
 from schemaxl.core.units import Length
 
@@ -212,6 +213,29 @@ def _coerce_row(model: type[Any], row: RowInput) -> Any:
     return model(**dict(zip(names, row)))
 
 
+def _report_warnings(layout_warnings: list[LayoutWarning], *, strict: bool) -> None:
+    """solver が積んだ警告を strict に応じて扱う。
+
+    solver は警告を送出せず `PlacementPlan.warnings` に積むだけなので、それを
+    「落とす」のか「知らせて続行する」のかを決めるのがここ。
+
+    - strict=True:  1 件でもあれば `LayoutError`。見切れた帳票を黙って書き出さない。
+    - strict=False: `SchemaxlWarning` として通知し、書き出しは続行する。
+    """
+    if not layout_warnings:
+        return
+    if strict:
+        first = layout_warnings[0]
+        raise LayoutError(
+            f"レイアウト警告 {len(layout_warnings)} 件。最初の 1 件"
+            f"(行 {first.row} / 列 {first.col}): {first.message}"
+            " — 警告を許容して書き出すなら strict=False",
+            overage_pt=first.overage_pt,
+        )
+    for layout_warning in layout_warnings:
+        warnings.warn(layout_warning.message, SchemaxlWarning, stacklevel=3)
+
+
 # --- 帳票の宣言基底 -------------------------------------------------------
 
 
@@ -242,12 +266,17 @@ class Report(Generic[RowT]):
         raise LayoutError("Table に行モデルがバインドされていない(bind / Report ジェネリクス)")
 
     @classmethod
-    def render(cls, rows: list[RowInput], path: str) -> None:
+    def render(cls, rows: list[RowInput], path: str, *, strict: bool = True) -> None:
         """rows を帳票化して path (xlsx) に書き出す。
 
         rows は dict のリスト(キー → フィールド名)またはタプル / リストの
         リスト(フィールド宣言順で位置マップ)を受け付ける。各行は内部で
         行モデルへ変換され、Pydantic のデータ制約で検証される。
+
+        `strict=True`(既定)は、`Shrink` の下限でも収まらない等のレイアウト警告が
+        1 件でもあれば `LayoutError` を送出し、ファイルを書き出さない。見切れた帳票を
+        黙って出さないための既定。警告を承知で書き出したい場合は `strict=False`
+        (`SchemaxlWarning` として通知したうえで続行する)。
 
         パイプライン: モデル → solver(制約解決)→ PlacementPlan → backend(書き出し)。
         """
@@ -258,4 +287,6 @@ class Report(Generic[RowT]):
         row_model = cls._row_model()
         table = cls.body if cls.body.bind is not None else replace(cls.body, bind=row_model)
         validated = [_coerce_row(row_model, row) for row in rows]
-        write_xlsx(solve(cls.page, table, validated), path)
+        plan = solve(cls.page, table, validated)
+        _report_warnings(plan.warnings, strict=strict)
+        write_xlsx(plan, path)

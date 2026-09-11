@@ -52,6 +52,21 @@ AllergyReport.render(rows, "report.xlsx")
 いずれの場合も、渡された行は内部で `AllergyRow` に変換され、Pydantic の
 データ制約(`max_length` 等)で検証されてからレンダリングされる。
 
+### 見切れたときの挙動(`strict`)
+
+`Shrink(min_pt=...)` の下限まで縮めても収まらない、といったレイアウト警告は
+solver が `PlacementPlan.warnings` に構造化して積む(行・列・フィールド名・超過量)。
+solver 自身は送出しない。それをどう扱うかは `render` が決める。
+
+```python
+AllergyReport.render(rows, "report.xlsx")                # strict=True(既定)
+AllergyReport.render(rows, "report.xlsx", strict=False)  # 警告を通知して書き出す
+```
+
+- `strict=True`(既定) … 警告が 1 件でもあれば `LayoutError` を送出し、**ファイルを書き出さない。**
+  見切れた帳票が黙って出来上がるのを防ぐ。
+- `strict=False` … `SchemaxlWarning` として通知したうえで書き出す。
+
 ## API スケッチ
 
 > 以下は設計の完成イメージです。**まだ動作しません**(骨格のみ)。
