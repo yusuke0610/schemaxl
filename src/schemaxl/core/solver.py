@@ -12,6 +12,7 @@ PlacementPlan を構築する。**副作用を持たない純粋関数群**と�
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -91,14 +92,17 @@ def _auto_cap_pt(
 
     `max` の明示が最優先。未指定でも overflow 戦略が宣言されていれば上限を課す。
     課さないと Auto 列は内容が 1 行で収まる幅を常に確保し、Wrap も Shrink も
-    発動しないまま終わる。既定の上限は `min`、それも無ければ印字可能幅を列数で
-    割った値(Fill 列も頭数に入る粗い見積もりだが、あくまで最後の受け皿)。
-    overflow が無い列は切り詰める術がないので、従来どおり内容幅を確保する。
+    発動しないまま終わる。
+
+    **戦略の有無を最初に見る。** overflow が無い列は溢れた分を引き取る術がないので、
+    `max` が明示されていても上限を課さない(課すと折り返しも縮小も警告もないまま
+    見切れた帳票が書き出されてしまう)。上限は `max` → `min` → 印字可能幅を列数で
+    割った値、の順に決める(最後のものは Fill 列も頭数に入る粗い受け皿)。
     """
-    if width.max is not None:
-        return width.max.to_pt()
     if not has_overflow:
         return None
+    if width.max is not None:
+        return width.max.to_pt()
     if width.min is not None:
         return width.min.to_pt()
     return printable_width / column_count
@@ -183,9 +187,16 @@ def resolve_column_widths(
     return widths
 
 
-def _header_height_pt() -> float:
-    """ヘッダ行の高さ(1 行ぶん)。"""
-    return DEFAULT_FONT_PT * LINE_HEIGHT_FACTOR
+def _header_height_pt(headers: Sequence[_ResolvedCell] = ()) -> float:
+    """ヘッダ行の高さ pt。
+
+    ヘッダも overflow 戦略を通るので、折り返した行数・縮んだフォントを反映する。
+    解決済みヘッダを渡さない場合は 1 行ぶん(既定フォント)を返す。
+    """
+    return max(
+        (header.height_pt() for header in headers),
+        default=DEFAULT_FONT_PT * LINE_HEIGHT_FACTOR,
+    )
 
 
 def _cell_height_pt(column: Column, row: Any, width_pt: float, measure: TextMeasurer) -> float:
@@ -224,15 +235,24 @@ def resolve_row_heights(
     return heights
 
 
-def resolve_page_breaks(table: Table, row_heights: dict[int, float], page: A4) -> list[int]:
+def resolve_page_breaks(
+    table: Table,
+    row_heights: dict[int, float],
+    page: A4,
+    *,
+    header_height_pt: float | None = None,
+) -> list[int]:
     """`break_inside="avoid_row"` を尊重して改ページ位置を決定する。
 
     戻り値は改ページを入れる直前のデータ行インデックスのリスト。行は途中で割らず、
-    収まらない行はページ先頭へ送る。repeat_header 時はヘッダ 1 行ぶんを毎ページ差し引く。
+    収まらない行はページ先頭へ送る。repeat_header 時はヘッダのぶんを毎ページ差し引く。
+    `header_height_pt` を省略すると 1 行ぶんとみなす(ヘッダが折り返す場合は
+    `solve` が実際の高さを渡す。渡さないと繰り返しヘッダのぶんを過小に見積もる)。
     1 行だけでページに収まらない場合は LayoutError(仕様決定3)。
     """
     _, printable_height = _printable_size_pt(page)
-    available = printable_height - (_header_height_pt() if table.repeat_header else 0.0)
+    header_pt = _header_height_pt() if header_height_pt is None else header_height_pt
+    available = printable_height - (header_pt if table.repeat_header else 0.0)
 
     breaks: list[int] = []
     used = 0.0
@@ -260,14 +280,22 @@ class _ResolvedCell:
     text: str
     font_pt: float
     wrap: bool
+    line_count: int = 1
     warnings: tuple[LayoutWarning, ...] = ()
 
+    def height_pt(self) -> float:
+        """このセルを収めるのに要る高さ pt。"""
+        return self.line_count * self.font_pt * LINE_HEIGHT_FACTOR
 
-def _resolved_cell(
-    column: Column, row: Any, sheet_row: int, width_pt: float, measure: TextMeasurer
+
+def _resolve_text(
+    column: Column, text: str, sheet_row: int, width_pt: float, measure: TextMeasurer
 ) -> _ResolvedCell:
-    """セルの表示文字列・確定フォント・折り返しフラグと、収まらなかった警告を求める。"""
-    text = cell_text(column, row)
+    """文字列を列幅に収めた結果(表示文字列・フォント・折り返し・行数・警告)を返す。
+
+    ヘッダ行もデータ行も同じ経路を通す。ヘッダだけ戦略を適用しないと、列幅が
+    頭打ちになったときにヘッダが無警告で見切れる。
+    """
     if column.overflow is None:
         return _ResolvedCell(text=text, font_pt=DEFAULT_FONT_PT, wrap=False)
     result = fit(text, width_pt, column.overflow, base_font_pt=DEFAULT_FONT_PT, measure=measure)
@@ -292,8 +320,16 @@ def _resolved_cell(
         text=text,
         font_pt=result.font_pt,
         wrap=isinstance(column.overflow, Wrap),
+        line_count=result.line_count,
         warnings=warnings,
     )
+
+
+def _resolved_cell(
+    column: Column, row: Any, sheet_row: int, width_pt: float, measure: TextMeasurer
+) -> _ResolvedCell:
+    """データセル 1 つを列幅に収めた結果を返す。"""
+    return _resolve_text(column, cell_text(column, row), sheet_row, width_pt, measure)
 
 
 def solve(
@@ -311,26 +347,38 @@ def solve(
     columns = _columns(table)
     column_widths_pt = resolve_column_widths(table, rows, page, measure=measure)
     row_heights_pt = resolve_row_heights(table, rows, column_widths_pt, measure=measure)
-    data_breaks = resolve_page_breaks(table, row_heights_pt, page)
+
+    # ヘッダもデータ行と同じ経路で列幅に収める。改ページはヘッダの実高に依存する
+    # (repeat_header で毎ページ差し引くため)ので、先に解決しておく。
+    header_row = 1
+    headers = [
+        _resolve_text(column, column.header, header_row, column_widths_pt[column.index], measure)
+        for column in columns
+    ]
+    header_height_pt = _header_height_pt(headers)
+
+    data_breaks = resolve_page_breaks(
+        table, row_heights_pt, page, header_height_pt=header_height_pt
+    )
 
     plan = PlacementPlan(
         header_rows=1 if table.repeat_header else 0,
         page=_page_setup(page),
     )
-    header_row = 1
 
     # ヘッダ行。
-    for column in columns:
+    for column, header in zip(columns, headers):
+        plan.warnings.extend(header.warnings)
         plan.cells.append(
             CellPlacement(
                 row=header_row,
                 col=column.index + 1,
-                value=column.header,
-                font_pt=DEFAULT_FONT_PT,
-                wrap=False,
+                value=header.text,
+                font_pt=header.font_pt,
+                wrap=header.wrap,
             )
         )
-    plan.row_heights[header_row] = pt_to_excel_row_height(_header_height_pt())
+    plan.row_heights[header_row] = pt_to_excel_row_height(header_height_pt)
 
     # データ行。
     for data_index, row in enumerate(rows):

@@ -89,6 +89,21 @@ def test_auto_width_is_uncapped_without_an_overflow_strategy() -> None:
     assert widths[0] == pytest.approx(40 * 11.0)
 
 
+def test_auto_max_is_ignored_without_an_overflow_strategy() -> None:
+    """戦略が無い列は max を宣言していても切り詰めない。
+
+    切り詰めると溢れた分を引き取る術がなく、折り返しも縮小も警告もないまま
+    見切れた帳票が strict=True でも書き出されてしまう。
+    """
+
+    class Row(BaseModel):
+        long: Annotated[str, Layout(header="長", width=Auto(max=mm(20)))]
+
+    table = Table(bind=Row)
+    widths = resolve(table, [{"long": "あ" * 40}], measure=char_measure)
+    assert widths[0] == pytest.approx(40 * 11.0)
+
+
 def test_auto_width_without_bounds_falls_back_to_an_even_share() -> None:
     class Row(BaseModel):
         a: Annotated[str, Layout(header="a", width=Auto(), overflow=Wrap())]
@@ -479,6 +494,59 @@ def test_solve_does_not_raise_for_warnings() -> None:
 
     plan = solve(PAGE, Table(bind=Row), [{"s": "あ" * 30}], measure=char_measure)
     assert plan.cells  # 例外にはならず、計画は最後まで組み立てられる
+
+
+def test_header_uses_the_column_overflow_strategy_when_the_width_is_capped() -> None:
+    """ヘッダも戦略を通ること。通さないと列幅が頭打ちのときヘッダだけ見切れる。"""
+    from schemaxl.core.solver import solve
+
+    class Row(BaseModel):
+        v: Annotated[
+            str,
+            Layout(header="非常に長いヘッダ名です", width=Auto(min=mm(10)), overflow=Wrap()),
+        ]
+
+    plan = solve(PAGE, Table(bind=Row), [{"v": "あ"}], measure=char_measure)
+    header = next(c for c in plan.cells if c.row == 1)
+    assert header.wrap is True
+    # 幅 10mm(28.3pt)に 11pt の文字は 2 文字ぶん。11 文字なら 6 行。
+    assert plan.row_heights[1] == pytest.approx(6 * 11.0 * 1.2)
+
+
+def test_header_overflow_is_reported_at_the_header_row() -> None:
+    from schemaxl.core.solver import solve
+
+    class Row(BaseModel):
+        v: Annotated[
+            str,
+            Layout(
+                header="非常に長いヘッダ名です",
+                width=Auto(min=mm(10)),
+                overflow=Shrink(min_pt=8),
+            ),
+        ]
+
+    plan = solve(PAGE, Table(bind=Row), [{"v": "あ"}], measure=char_measure)
+    assert len(plan.warnings) == 1
+    warning = plan.warnings[0]
+    assert warning.row == 1  # ヘッダ行
+    assert warning.col == 1
+    assert warning.field_name == "v"
+    assert warning.overage_pt == pytest.approx(11 * 8.0 - mm(10).to_pt())
+
+
+def test_repeat_header_reserves_the_resolved_header_height() -> None:
+    """折り返したヘッダのぶんを毎ページ差し引くこと(1 行ぶんの過小見積もりを防ぐ)。"""
+    from schemaxl.core.solver import resolve_page_breaks
+
+    tall_header = 4 * 11.0 * 1.2
+    # ヘッダ 1 行ぶんなら 2 行とも収まるが、4 行ぶん差し引くと収まらない高さ。
+    h = (PRINTABLE_HEIGHT_PT - 11.0 * 1.2) / 2
+    row_heights = {0: h, 1: h}
+    table = _one_col_table(repeat_header=True)
+
+    assert resolve_page_breaks(table, row_heights, PAGE) == []
+    assert resolve_page_breaks(table, row_heights, PAGE, header_height_pt=tall_header) == [1]
 
 
 def test_solve_records_no_warnings_when_everything_fits() -> None:
