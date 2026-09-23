@@ -13,7 +13,7 @@ from schemaxl.core.model import (
     Report,
     Table,
 )
-from schemaxl.core.overflow import Shrink, Wrap
+from schemaxl.core.overflow import Shrink, Truncate, Wrap
 from schemaxl.core.units import mm, pt
 
 __all__ = [
@@ -24,6 +24,7 @@ __all__ = [
     "Report",
     "Shrink",
     "Table",
+    "Truncate",
     "Wrap",
     "mm",
     "pt",

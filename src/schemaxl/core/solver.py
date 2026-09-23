@@ -16,7 +16,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from schemaxl.core.errors import LayoutError, LayoutWarning
+from schemaxl.core.errors import WARNING_OVERFLOW, WARNING_TRUNCATED, LayoutError, LayoutWarning
 from schemaxl.core.model import A4, Column, Table, cell_text, columns_of
 from schemaxl.core.model import Auto as AutoWidth
 from schemaxl.core.model import Fill as FillWidth
@@ -304,22 +304,34 @@ def _resolve_text(
 
     # fit は「収まらなかった」ことをメッセージで返すだけで座標を知らない。
     # ここで行・列・フィールド名と超過量を付けて構造化する。
-    warnings: tuple[LayoutWarning, ...] = ()
-    if result.warnings:
-        overage_pt = measure(text, result.font_pt) - width_pt
-        warnings = tuple(
+    overage_pt = measure(text, result.font_pt) - width_pt
+    warnings = tuple(
+        LayoutWarning(
+            message=message,
+            kind=WARNING_OVERFLOW,
+            field_name=column.field_name,
+            row=sheet_row,
+            col=column.index + 1,
+            overage_pt=overage_pt if overage_pt > 0 else None,
+        )
+        for message in result.warnings
+    )
+    # 切り詰めは宣言どおりの結果だが、情報が失われるので黙らせない。
+    shown = text
+    if result.truncated:
+        shown = result.lines[0]
+        warnings += (
             LayoutWarning(
-                message=message,
-                kind="overflow",
+                message=f"幅 {width_pt:.1f}pt に収まらず切り詰めた: {text!r} → {shown!r}",
+                kind=WARNING_TRUNCATED,
                 field_name=column.field_name,
                 row=sheet_row,
                 col=column.index + 1,
                 overage_pt=overage_pt if overage_pt > 0 else None,
-            )
-            for message in result.warnings
+            ),
         )
     return _ResolvedCell(
-        text=text,
+        text=shown,
         font_pt=result.font_pt,
         wrap=isinstance(column.overflow, Wrap),
         line_count=result.line_count,
