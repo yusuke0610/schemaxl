@@ -10,6 +10,8 @@ solver は純粋関数なので、ファイル I/O・openpyxl なしで検証で
 を扱う。
 """
 
+from datetime import date
+from decimal import Decimal
 from typing import Annotated
 
 import pytest
@@ -592,6 +594,83 @@ def test_solve_output_is_json_serializable() -> None:
     assert restored["page"]["paper"] == "A4"
     assert restored["print_area"]["last_col"] == 2
     assert restored["warnings"] == []
+
+
+# --- セル値の型と表示書式 ------------------------------------------------
+
+
+class TypedRow(BaseModel):
+    qty: Annotated[int, Layout(header="数", number_format="#,##0")]
+    price: Annotated[Decimal, Layout(header="単価")]
+    served_on: Annotated[date, Layout(header="日付", number_format="yyyy/mm/dd")]
+    ok: Annotated[bool, Layout(header="可")]
+
+
+def _solve_typed():
+    from schemaxl.core.solver import solve
+
+    row = TypedRow(qty=1234567, price=Decimal("12.50"), served_on=date(2026, 9, 3), ok=True)
+    return solve(PAGE, Table(bind=TypedRow), [row], measure=char_measure)
+
+
+def test_solve_keeps_value_types_instead_of_stringifying() -> None:
+    cells = {c.col: c for c in _solve_typed().cells if c.row == 2}
+    assert (cells[1].value, cells[1].value_kind, cells[1].number_format) == (
+        1234567,
+        "number",
+        "#,##0",
+    )
+    assert (cells[2].value, cells[2].value_kind) == ("12.50", "decimal")
+    assert (cells[3].value, cells[3].value_kind, cells[3].number_format) == (
+        "2026-09-03",
+        "date",
+        "yyyy/mm/dd",
+    )
+    assert (cells[4].value, cells[4].value_kind) == (True, "bool")
+
+
+def test_column_width_is_measured_on_the_formatted_display_string() -> None:
+    # 1234567 は "1,234,567"(9 文字)として表示される。カンマ抜きの 7 文字で測ると見切れる。
+    class Row(BaseModel):
+        qty: Annotated[int, Layout(header="数", width=Auto(), number_format="#,##0")]
+
+    widths = resolve(Table(bind=Row), [Row(qty=1234567)], measure=char_measure)
+    assert widths[0] == pytest.approx(len("1,234,567") * 11.0)
+
+
+def test_numbers_in_a_wrap_column_are_not_wrapped_and_warn_when_they_do_not_fit() -> None:
+    # Excel は数値を折り返さず「###」にする。行高を伸ばしても意味がないので警告する。
+    from schemaxl.core.solver import solve
+
+    class Row(BaseModel):
+        qty: Annotated[int, Layout(header="数", width=Auto(max=mm(10)), overflow=Wrap())]
+
+    plan = solve(PAGE, Table(bind=Row), [Row(qty=123456789012)], measure=char_measure)
+    cell = next(c for c in plan.cells if c.row == 2)
+    assert cell.wrap is False
+    assert plan.row_heights[2] == pytest.approx(11.0 * 1.2)  # 1 行のまま
+    [warning] = plan.warnings
+    assert (warning.kind, warning.row, warning.col) == ("overflow", 2, 1)
+    assert warning.overage_pt == pytest.approx(12 * 11.0 - mm(10).to_pt())
+
+
+def test_numbers_that_fit_in_a_wrap_column_do_not_warn() -> None:
+    from schemaxl.core.solver import solve
+
+    class Row(BaseModel):
+        qty: Annotated[int, Layout(header="数", width=Auto(max=mm(30)), overflow=Wrap())]
+
+    plan = solve(PAGE, Table(bind=Row), [Row(qty=12)], measure=char_measure)
+    assert plan.warnings == []
+
+
+def test_plan_with_decimal_and_dates_is_json_serializable() -> None:
+    import dataclasses
+    import json
+
+    restored = json.loads(json.dumps(dataclasses.asdict(_solve_typed())))
+    cell = next(c for c in restored["cells"] if c["row"] == 2 and c["col"] == 3)
+    assert (cell["value"], cell["value_kind"]) == ("2026-09-03", "date")
 
 
 # --- ヘルパ ---------------------------------------------------------------

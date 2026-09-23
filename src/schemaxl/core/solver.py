@@ -17,12 +17,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from schemaxl.core.errors import LayoutError, LayoutWarning
-from schemaxl.core.model import A4, Column, Table, cell_text, columns_of
+from schemaxl.core.model import A4, Column, Table, cell_value, columns_of
 from schemaxl.core.model import Auto as AutoWidth
 from schemaxl.core.model import Fill as FillWidth
 from schemaxl.core.overflow import DEFAULT_FONT_PT, TextMeasurer, Wrap, default_measure, fit
 from schemaxl.core.plan import CellPlacement, CellRange, PageBreak, PageSetup, PlacementPlan
 from schemaxl.core.units import mm, pt_to_excel_column_width, pt_to_excel_row_height
+from schemaxl.core.values import CellValue
 
 # A4 の物理寸法(mm)と呼称。
 A4_WIDTH_MM = 210.0
@@ -114,8 +115,11 @@ def _fill_min_pt(width: FillWidth) -> float:
 
 
 def _content_width_pt(column: Column, rows: list[Any], measure: TextMeasurer) -> float:
-    """列の内容(ヘッダ + 全行)を 1 行で描いたときの最大幅 pt。"""
-    texts = [column.header, *(cell_text(column, row) for row in rows)]
+    """列の内容(ヘッダ + 全行)を 1 行で描いたときの最大幅 pt。
+
+    値は書式適用後の表示文字列で測る(`1234567` は `"1,234,567"` の幅)。
+    """
+    texts = [column.header, *(cell_value(column, row).display for row in rows)]
     return max((measure(text, DEFAULT_FONT_PT) for text in texts), default=0.0)
 
 
@@ -199,21 +203,6 @@ def _header_height_pt(headers: Sequence[_ResolvedCell] = ()) -> float:
     )
 
 
-def _cell_height_pt(column: Column, row: Any, width_pt: float, measure: TextMeasurer) -> float:
-    """1 セルの高さ pt。overflow 戦略で行数・フォントが決まる。"""
-    if column.overflow is None:
-        # 戦略未指定は 1 行のまま(Auto 列は内容幅を確保済みなので溢れない)。
-        return DEFAULT_FONT_PT * LINE_HEIGHT_FACTOR
-    result = fit(
-        cell_text(column, row),
-        width_pt,
-        column.overflow,
-        base_font_pt=DEFAULT_FONT_PT,
-        measure=measure,
-    )
-    return result.line_count * result.font_pt * LINE_HEIGHT_FACTOR
-
-
 def resolve_row_heights(
     table: Table,
     rows: list[Any],
@@ -229,7 +218,12 @@ def resolve_row_heights(
     heights: dict[int, float] = {}
     for row_index, row in enumerate(rows):
         heights[row_index] = max(
-            (_cell_height_pt(col, row, column_widths[col.index], measure) for col in columns),
+            (
+                _resolved_cell(
+                    col, cell_value(col, row), 0, column_widths[col.index], measure
+                ).height_pt()
+                for col in columns
+            ),
             default=DEFAULT_FONT_PT * LINE_HEIGHT_FACTOR,
         )
     return heights
@@ -291,15 +285,41 @@ class _ResolvedCell:
 
 
 def _resolve_text(
-    column: Column, text: str, sheet_row: int, width_pt: float, measure: TextMeasurer
+    column: Column,
+    text: str,
+    sheet_row: int,
+    width_pt: float,
+    measure: TextMeasurer,
+    *,
+    wrappable: bool = True,
 ) -> _ResolvedCell:
     """文字列を列幅に収めた結果(表示文字列・フォント・折り返し・行数・警告)を返す。
 
     ヘッダ行もデータ行も同じ経路を通す。ヘッダだけ戦略を適用しないと、列幅が
     頭打ちになったときにヘッダが無警告で見切れる。
+
+    `wrappable=False`(数値・日付)は `Wrap` 列でも折り返さない。Excel は数値を
+    折り返さず、収まらなければ「###」と表示するため。収まらない場合は警告を積む。
     """
     if column.overflow is None:
         return _ResolvedCell(text=text, font_pt=DEFAULT_FONT_PT, wrap=False)
+    if not wrappable and isinstance(column.overflow, Wrap):
+        overage_pt = measure(text, DEFAULT_FONT_PT) - width_pt
+        unwrappable_warnings: tuple[LayoutWarning, ...] = ()
+        if overage_pt > 0:
+            unwrappable_warnings = (
+                LayoutWarning(
+                    message=(f"数値・日付は折り返せず、幅 {width_pt:.1f}pt に収まらない: {text!r}"),
+                    kind="overflow",
+                    field_name=column.field_name,
+                    row=sheet_row,
+                    col=column.index + 1,
+                    overage_pt=overage_pt,
+                ),
+            )
+        return _ResolvedCell(
+            text=text, font_pt=DEFAULT_FONT_PT, wrap=False, warnings=unwrappable_warnings
+        )
     result = fit(text, width_pt, column.overflow, base_font_pt=DEFAULT_FONT_PT, measure=measure)
 
     # fit は「収まらなかった」ことをメッセージで返すだけで座標を知らない。
@@ -328,10 +348,12 @@ def _resolve_text(
 
 
 def _resolved_cell(
-    column: Column, row: Any, sheet_row: int, width_pt: float, measure: TextMeasurer
+    column: Column, value: CellValue, sheet_row: int, width_pt: float, measure: TextMeasurer
 ) -> _ResolvedCell:
-    """データセル 1 つを列幅に収めた結果を返す。"""
-    return _resolve_text(column, cell_text(column, row), sheet_row, width_pt, measure)
+    """データセル 1 つを列幅に収めた結果を返す。表示文字列(書式適用後)で判定する。"""
+    return _resolve_text(
+        column, value.display, sheet_row, width_pt, measure, wrappable=value.wrappable
+    )
 
 
 def solve(
@@ -390,15 +412,19 @@ def solve(
         sheet_row = data_index + 2
         plan.row_heights[sheet_row] = pt_to_excel_row_height(row_heights_pt[data_index])
         for column in columns:
+            value = cell_value(column, row)
             resolved = _resolved_cell(
-                column, row, sheet_row, column_widths_pt[column.index], measure
+                column, value, sheet_row, column_widths_pt[column.index], measure
             )
             plan.warnings.extend(resolved.warnings)
             plan.cells.append(
                 CellPlacement(
                     row=sheet_row,
                     col=column.index + 1,
-                    value=resolved.text,
+                    # 型を保った値(表示文字列ではない)と、その解読・表示に要る情報。
+                    value=value.value,
+                    value_kind=value.kind,
+                    number_format=value.number_format,
                     font_pt=resolved.font_pt,
                     wrap=resolved.wrap,
                 )

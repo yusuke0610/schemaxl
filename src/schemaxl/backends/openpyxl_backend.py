@@ -7,6 +7,8 @@ PlacementPlan を受け取り、openpyxl で .xlsx を書き出す。
 
 from __future__ import annotations
 
+from datetime import date, datetime
+from decimal import Decimal
 from typing import Any
 
 from openpyxl import Workbook
@@ -15,7 +17,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.pagebreak import Break
 
 from schemaxl.backends.base import StrPath
-from schemaxl.core.plan import CellRange, PageSetup, PlacementPlan
+from schemaxl.core.plan import CellPlacement, CellRange, PageSetup, PlacementPlan
 from schemaxl.core.units import pt_to_excel_margin
 
 # 用紙の呼称 → OOXML の paperSize コード。Excel 固有の符号化であって
@@ -56,6 +58,23 @@ def _apply_page_setup(worksheet: Any, page: PageSetup) -> None:
     margins.footer = pt_to_excel_margin(page.footer_margin_pt)
 
 
+def _decode_value(cell: CellPlacement) -> Any:
+    """plan 上で文字列に符号化された値を元の型へ戻す(Excel に数値・日付として書くため)。
+
+    符号化の解読であってレイアウト判断ではない。表示書式は solver が決めた
+    `number_format` をそのまま使う。
+    """
+    if cell.value is None or not isinstance(cell.value, str):
+        return cell.value
+    if cell.value_kind == "decimal":
+        return Decimal(cell.value)
+    if cell.value_kind == "datetime":
+        return datetime.fromisoformat(cell.value)
+    if cell.value_kind == "date":
+        return date.fromisoformat(cell.value)
+    return cell.value
+
+
 def _a1_range(area: CellRange) -> str:
     """CellRange を A1 記法("A1:C10")へ変換する。"""
     first = f"{get_column_letter(area.first_col)}{area.first_row}"
@@ -69,7 +88,7 @@ def write_xlsx(plan: PlacementPlan, path: StrPath) -> None:
     - sheet_name を反映(Excel のシート名制約に反すれば ValueError)
     - page(用紙・向き・余白)/ print_area を反映
     - column_widths / row_heights を反映
-    - CellPlacement を書き込み(結合セル・フォント pt・折り返しを適用)
+    - CellPlacement を書き込み(値の型・表示書式・結合セル・フォント pt・折り返しを適用)
     - page_breaks / 印刷タイトル行(repeat_header)を反映
     """
     workbook = Workbook()
@@ -83,7 +102,9 @@ def write_xlsx(plan: PlacementPlan, path: StrPath) -> None:
         _apply_page_setup(worksheet, plan.page)
 
     for cell in plan.cells:
-        target = worksheet.cell(row=cell.row, column=cell.col, value=cell.value)
+        target = worksheet.cell(row=cell.row, column=cell.col, value=_decode_value(cell))
+        if cell.number_format is not None:
+            target.number_format = cell.number_format
         if cell.font_pt is not None:
             target.font = Font(size=cell.font_pt)
         target.alignment = Alignment(wrap_text=cell.wrap, vertical="top")

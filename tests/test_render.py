@@ -205,3 +205,26 @@ def test_render_accepts_pathlike(tmp_path) -> None:
     path = tmp_path / "report.xlsx"  # pathlib.Path のまま渡す
     AllergyReport.render([{"child_name": "山田", "allergens": []}], path)
     assert path.exists()
+
+
+# --- セル値の型(数値を文字列にしない) --------------------------------------
+
+
+class OrderRow(BaseModel):
+    item: Annotated[str, Layout(header="品目")]
+    qty: Annotated[int, Layout(header="数量", number_format="#,##0")]
+
+
+class OrderReport(Report[OrderRow]):
+    page = A4(margin=mm(15))
+    body = Table()
+
+
+def test_render_writes_numbers_as_numbers(tmp_path) -> None:
+    path = tmp_path / "report.xlsx"
+    OrderReport.render([{"item": "牛乳", "qty": 12}, ("卵", 1500)], path)
+
+    ws = load_workbook(str(path)).active
+    assert ws.cell(row=2, column=2).value == 12  # "12" ではない
+    assert ws.cell(row=3, column=2).value == 1500
+    assert ws.cell(row=3, column=2).number_format == "#,##0"

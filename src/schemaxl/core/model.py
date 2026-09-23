@@ -29,6 +29,7 @@ from typing import (
 from schemaxl.core.errors import LayoutError, LayoutWarning, SchemaxlWarning
 from schemaxl.core.overflow import OverflowStrategy, TextMeasurer, default_measure, normalize
 from schemaxl.core.units import Length
+from schemaxl.core.values import CellValue, check_number_format, to_cell_value
 
 if TYPE_CHECKING:
     from schemaxl.backends.base import Backend, StrPath
@@ -40,6 +41,9 @@ RowT = TypeVar("RowT")
 # - dict:      キーがフィールド名にマップされる
 # - Sequence:  モデルのフィールド宣言順で位置マップされる(タプル / リスト)
 RowInput = dict[str, Any] | Sequence[Any]
+
+# list 値を 1 セルへ結合するときの既定の区切り文字(`Layout.join` 未指定時)。
+DEFAULT_JOIN = "、"
 
 
 # --- 列幅の指定 -----------------------------------------------------------
@@ -112,6 +116,13 @@ class Layout:
     # 引数なし戦略はクラス参照でも可(overflow.normalize で正規化)。
     overflow: OverflowStrategy | type[OverflowStrategy] | None = None
     join: str | None = None  # list 値を 1 セルへ結合する際の区切り文字
+    # Excel の表示書式("#,##0" / "yyyy/mm/dd" 等)。幅はこの書式で表示した文字列で測る。
+    number_format: str | None = None
+
+    def __post_init__(self) -> None:
+        # 表示を再現できない書式は幅を見積もれないので、宣言の時点で拒否する。
+        if self.number_format is not None:
+            check_number_format(self.number_format)
 
 
 # --- ページ設定 -----------------------------------------------------------
@@ -159,6 +170,7 @@ class Column:
     width: Width
     overflow: OverflowStrategy | None
     join: str | None
+    number_format: str | None = None
 
 
 def columns_of(model: type[Any]) -> list[Column]:
@@ -179,27 +191,30 @@ def columns_of(model: type[Any]) -> list[Column]:
             continue
         overflow = normalize(layout.overflow) if layout.overflow is not None else None
         width = normalize_width(layout.width) if layout.width is not None else Auto()
-        columns.append(Column(index, name, layout.header, width, overflow, layout.join))
+        columns.append(
+            Column(index, name, layout.header, width, overflow, layout.join, layout.number_format)
+        )
         index += 1
     return columns
 
 
-def cell_text(column: Column, row: Any) -> str:
-    """1 セルに表示する文字列を得る。dict / モデルインスタンスの両方に対応。
+def cell_value(column: Column, row: Any) -> CellValue:
+    """1 セルの値(plan に載せる値と、幅計測に使う表示文字列)を得る。
 
-    list 値は `Layout.join`(未指定なら "、")で 1 セルへ結合する。
+    dict / モデルインスタンスの両方に対応。型は保ったまま(`int` を `"12"` にしない)、
+    list 値は `Layout.join`(未指定なら `DEFAULT_JOIN`)で 1 セルへ結合する。
     """
-    value = (
+    raw = (
         row.get(column.field_name)
         if isinstance(row, dict)
         else getattr(row, column.field_name, None)
     )
-    if value is None:
-        return ""
-    if isinstance(value, (list, tuple)):
-        separator = column.join if column.join is not None else "、"
-        return separator.join(str(item) for item in value)
-    return str(value)
+    return to_cell_value(
+        raw,
+        join=column.join if column.join is not None else DEFAULT_JOIN,
+        number_format=column.number_format,
+        field_name=column.field_name,
+    )
 
 
 def _field_names(model: type[Any]) -> list[str]:

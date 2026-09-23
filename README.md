@@ -130,6 +130,14 @@ class AllergyReport(Report[AllergyRow]):
   1 行固定だと無警告で見切れるため。`Wrap` ならヘッダも折り返してヘッダ行の高さが伸び、
   `repeat_header` はその実高を毎ページ差し引く。
 - `overflow` … 収まらないときの戦略。`Wrap()`(折り返し)/ `Shrink(min_pt=...)`(フォント縮小、下限 pt 指定)。引数なしの戦略は `Wrap` / `Wrap()` どちらでも可(内部でインスタンスに正規化)。
+- **セル値はモデルの型のまま書き出す。** `int` / `float` / `Decimal` は数値、`date` / `datetime` は日付、
+  `bool` は論理値として Excel に入る(SUM・並べ替え・フィルタが効く)。`list` は `join`(既定 `"、"`)で結合した文字列。
+- `number_format` … Excel の表示書式。`Layout(header="金額", number_format="#,##0")` のように指定する。
+  **列幅はこの書式で表示した文字列で測る**(`1234567` は `"1,234,567"` の幅)。表示を再現できる書式だけを
+  受け付ける: `0` / `0.00` / `#,##0` / `#,##0.00` / `0%` / `0.0%` と、`yyyy-mm-dd` / `yyyy/mm/dd` / `yyyy/m/d` /
+  `hh:mm` / `hh:mm:ss` とその日時の組み合わせ。それ以外は宣言時に `ValueError`。日付の既定は `yyyy-mm-dd`。
+- 数値・日付は Excel では折り返せない(収まらないと `###` になる)ため、`Wrap` 列でも折り返さず、
+  収まらなければレイアウト警告になる。
 - `break_inside="avoid_row"` … 1 行の途中でページを割らない。
 - `repeat_header=True` … ヘッダ行を各ページの先頭で繰り返す。
 - **行モデルは `Report[AllergyRow]` のジェネリクスから推論される**ため、`Table(bind=...)` は省略できる(同じ情報を 2 回書かない)。明示したい場合は `Table(bind=AllergyRow)` も可。
@@ -151,6 +159,7 @@ Pydantic モデル(単一の真実)
 | 単位 | `core/units.py` | `mm`, `pt` などの単位型 |
 | overflow 戦略 | `core/overflow.py` | `Wrap`, `Shrink` 等の収まらないときの戦略 |
 | 制約解決 | `core/solver.py` | 列幅・行高・改ページの解決(**純粋関数**) |
+| セル値 | `core/values.py` | 値の型の保持と、書式適用後の表示文字列(幅計測の入力) |
 | 配置計画 | `core/plan.py` | 配置計画の中間表現 `PlacementPlan` |
 | バックエンド | `backends/base.py` | `Backend` プロトコル(出力ライブラリ非依存) |
 | バックエンド | `backends/openpyxl_backend.py` | `PlacementPlan` → xlsx 書き出し |

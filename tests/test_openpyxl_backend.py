@@ -178,3 +178,43 @@ def test_openpyxl_backend_writes_via_write_xlsx(tmp_path) -> None:
     path = tmp_path / "out.xlsx"
     OpenpyxlBackend().write(_fixed_plan(), path)
     assert load_workbook(str(path)).active.cell(row=1, column=1).value is not None
+
+
+def test_typed_values_and_number_formats_are_read_back(tmp_path) -> None:
+    from datetime import date, datetime
+    from decimal import Decimal
+
+    plan = PlacementPlan(
+        cells=[
+            CellPlacement(row=1, col=1, value=1234567, value_kind="number", number_format="#,##0"),
+            CellPlacement(row=1, col=2, value="12.50", value_kind="decimal"),
+            CellPlacement(
+                row=1, col=3, value="2026-09-03", value_kind="date", number_format="yyyy/mm/dd"
+            ),
+            CellPlacement(
+                row=1,
+                col=4,
+                value="2026-09-03T08:05:00",
+                value_kind="datetime",
+                number_format="yyyy-mm-dd hh:mm",
+            ),
+            CellPlacement(row=1, col=5, value=True, value_kind="bool"),
+            CellPlacement(row=1, col=6, value=None),
+        ]
+    )
+    path = tmp_path / "out.xlsx"
+    write_xlsx(plan, str(path))
+
+    ws = load_workbook(str(path)).active
+    qty, price, served_on, served_at, ok, empty = (ws.cell(row=1, column=c) for c in range(1, 7))
+    assert (qty.value, qty.number_format) == (1234567, "#,##0")
+    # Excel は数値を倍精度で持つので、Decimal は数値として読み戻る。
+    assert price.value == pytest.approx(float(Decimal("12.50")))
+    assert isinstance(price.value, float)
+    # openpyxl は日付セルを datetime として読み戻す。
+    assert served_on.value == datetime.fromisoformat("2026-09-03T00:00")
+    assert served_on.number_format == "yyyy/mm/dd"
+    assert served_at.value == datetime.fromisoformat("2026-09-03T08:05")
+    assert ok.value is True
+    assert empty.value is None
+    assert date(2026, 9, 3) == served_on.value.date()

@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from schemaxl.core.errors import LayoutWarning
+from schemaxl.core.values import PlanValue, ValueKind
 
 
 @dataclass(frozen=True)
@@ -20,7 +21,12 @@ class CellPlacement:
     col: int
     row_span: int = 1
     col_span: int = 1
-    value: object | None = None
+    # JSON がそのまま表せる値。Decimal / date / datetime は文字列に符号化されており、
+    # 元の型は value_kind が示す(backend が戻す)。
+    value: PlanValue = None
+    value_kind: ValueKind = "text"
+    # Excel の表示書式。None なら backend は書式に触れない。
+    number_format: str | None = None
     font_pt: float | None = None
     wrap: bool = False
 
