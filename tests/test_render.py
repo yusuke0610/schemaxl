@@ -6,14 +6,16 @@ test_solver.py が担うので、ここでは入力契約(dict / Sequence / 検�
 配線の正しさだけを見る。
 """
 
+import warnings
 from typing import Annotated
 
 import pytest
 from openpyxl import load_workbook
 from pydantic import BaseModel, Field, ValidationError
 
-from schemaxl.core.errors import LayoutError
-from schemaxl.core.model import A4, Layout, Report, Table
+from schemaxl.core.errors import LayoutError, SchemaxlWarning
+from schemaxl.core.model import A4, Auto, Layout, Report, Table
+from schemaxl.core.overflow import Shrink
 from schemaxl.core.units import mm
 
 
@@ -88,3 +90,44 @@ def test_render_without_bind_or_generic_raises_layout_error(tmp_path) -> None:
 
     with pytest.raises(LayoutError):
         UnboundReport.render([], str(tmp_path / "report.xlsx"))
+
+
+# --- 見切れ警告の扱い(strict) --------------------------------------------
+
+
+class TightRow(BaseModel):
+    label: Annotated[
+        str,
+        Layout(header="ラベル", width=Auto(min=mm(20)), overflow=Shrink(min_pt=8)),
+    ]
+
+
+class TightReport(Report[TightRow]):
+    page = A4(orientation="portrait", margin=mm(15))
+    body = Table()
+
+
+CLIPPED = [{"label": "あ" * 30}]
+
+
+def test_strict_render_refuses_to_write_a_clipped_report(tmp_path) -> None:
+    path = tmp_path / "report.xlsx"
+    with pytest.raises(LayoutError, match="strict=False"):
+        TightReport.render(CLIPPED, str(path))
+    # 見切れた帳票は書き出さない。
+    assert not path.exists()
+
+
+def test_non_strict_render_warns_and_still_writes(tmp_path) -> None:
+    path = tmp_path / "report.xlsx"
+    with pytest.warns(SchemaxlWarning, match="収まらない"):
+        TightReport.render(CLIPPED, str(path), strict=False)
+    assert path.exists()
+
+
+def test_render_does_not_warn_when_everything_fits(tmp_path) -> None:
+    path = tmp_path / "report.xlsx"
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", SchemaxlWarning)
+        AllergyReport.render([{"child_name": "山田", "allergens": ["卵"]}], str(path))
+    assert path.exists()
