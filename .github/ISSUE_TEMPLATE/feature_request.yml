@@ -1,0 +1,21 @@
+name: 機能要望
+description: 新しい API・overflow 戦略・バックエンドなど
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 解決したい課題
+      description: どんな帳票で、何ができずに困っているか。
+    validations:
+      required: true
+  - type: textarea
+    id: sketch
+    attributes:
+      label: API のイメージ
+      description: README の「API スケッチ」と同じ粒度で、宣言側のコード例があると議論しやすい。
+      render: python
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 検討した代替案

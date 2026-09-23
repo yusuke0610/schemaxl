@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  # pydantic / openpyxl はランタイム依存を下限指定にしているので、コードが変わらなくても
+  # 新バージョンで壊れうる。週 1 回、最新の依存で回して早めに気づく。
+  schedule:
+    - cron: "0 0 * * 1"
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -37,8 +42,34 @@ jobs:
       - name: Mypy
         run: mypy
 
-      - name: Pytest
-        run: pytest
+      - name: Pytest (with coverage)
+        run: pytest --cov --cov-report=term-missing
+
+      # 層ごとの閾値。純粋関数の core は I/O なしでテストできるので高く、
+      # 副作用境界の backends はファイルの読み戻しで確かめる範囲に留める。
+      - name: Coverage (core >= 95%)
+        run: coverage report --include='*/schemaxl/core/*' --fail-under=95
+
+      - name: Coverage (backends >= 85%)
+        run: coverage report --include='*/schemaxl/backends/*' --fail-under=85
+
+  package:
+    name: build & twine check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build sdist / wheel
+        run: |
+          pip install build twine
+          python -m build
+
+      - name: Check distribution metadata
+        run: twine check --strict dist/*
 
   nix:
     name: nix flake check

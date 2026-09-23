@@ -1,0 +1,23 @@
+version: 2
+updates:
+  # pyproject.toml の依存。dev ツール(ruff / mypy 等)はマイナー固定なので、
+  # 新しいルールや型検査の変更はこの PR 上の CI で確かめてから取り込む。
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      dev-tools:
+        patterns: ["ruff", "mypy", "pytest", "pytest-*"]
+      runtime:
+        patterns: ["pydantic", "openpyxl"]
+    labels: ["dependencies"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+    labels: ["dependencies"]

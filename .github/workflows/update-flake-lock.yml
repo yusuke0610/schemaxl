@@ -1,0 +1,31 @@
+name: Update flake.lock
+
+# Dependabot は flake.lock を扱えないので、週 1 回 `nix flake update` した PR を作る。
+# Nix 環境と pip 環境で依存のバージョンがずれて「手元では通るが CI で落ちる」を防ぐ。
+on:
+  schedule:
+    - cron: "0 0 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      # GITHUB_TOKEN で作った PR では CI が起動しない(GitHub の仕様)。CI を回したい場合は
+      # contents / pull-requests 書き込み権限のあるトークンを FLAKE_UPDATE_TOKEN に登録する。
+      - uses: DeterminateSystems/update-flake-lock@v24
+        with:
+          token: ${{ secrets.FLAKE_UPDATE_TOKEN || github.token }}
+          pr-title: "chore(nix): update flake.lock"
+          pr-labels: dependencies

@@ -1,0 +1,64 @@
+name: Release
+
+# v* タグの push で PyPI へ公開する。認証は Trusted Publishing(OIDC)で、
+# API トークンを secrets に置かない。PyPI 側で本リポジトリ・このワークフロー・
+# environment "pypi" を Trusted Publisher として登録しておく必要がある。
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+jobs:
+  build:
+    name: build & check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # タグと __version__(バージョンの単一の真実)が食い違ったまま公開しない。
+      - name: Check the tag matches __version__
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(python -c 'import re, pathlib; print(re.search(r"__version__ = \"(.+?)\"", pathlib.Path("src/schemaxl/__init__.py").read_text()).group(1))')
+          if [ "v${version}" != "${TAG}" ]; then
+            echo "::error::tag ${TAG} does not match __version__ ${version}"
+            exit 1
+          fi
+
+      - name: Build sdist / wheel
+        run: |
+          pip install build twine
+          python -m build
+
+      - name: Check distribution metadata
+        run: twine check --strict dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/schemaxl
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1

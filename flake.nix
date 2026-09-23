@@ -19,6 +19,7 @@
           openpyxl
           # dev
           pytest
+          pytest-cov
           mypy
           ruff
         ]);
