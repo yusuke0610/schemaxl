@@ -15,11 +15,30 @@ from __future__ import annotations
 import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from typing import Any, Generic, Literal, TypeVar, get_args, get_origin, get_type_hints
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Generic,
+    Literal,
+    TypeVar,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
-from schemaxl.core.errors import LayoutError, LayoutWarning, SchemaxlWarning
-from schemaxl.core.overflow import OverflowStrategy, normalize
+from schemaxl.core.errors import (
+    NON_BLOCKING_WARNING_KINDS,
+    LayoutError,
+    LayoutWarning,
+    SchemaxlWarning,
+)
+from schemaxl.core.overflow import OverflowStrategy, TextMeasurer, default_measure, normalize
 from schemaxl.core.units import Length
+from schemaxl.core.values import CellValue, check_number_format, to_cell_value
+
+if TYPE_CHECKING:
+    from schemaxl.backends.base import Backend, StrPath
+    from schemaxl.core.plan import PlacementPlan
 
 RowT = TypeVar("RowT")
 
@@ -27,6 +46,9 @@ RowT = TypeVar("RowT")
 # - dict:      キーがフィールド名にマップされる
 # - Sequence:  モデルのフィールド宣言順で位置マップされる(タプル / リスト)
 RowInput = dict[str, Any] | Sequence[Any]
+
+# list 値を 1 セルへ結合するときの既定の区切り文字(`Layout.join` 未指定時)。
+DEFAULT_JOIN = "、"
 
 
 # --- 列幅の指定 -----------------------------------------------------------
@@ -99,6 +121,13 @@ class Layout:
     # 引数なし戦略はクラス参照でも可(overflow.normalize で正規化)。
     overflow: OverflowStrategy | type[OverflowStrategy] | None = None
     join: str | None = None  # list 値を 1 セルへ結合する際の区切り文字
+    # Excel の表示書式("#,##0" / "yyyy/mm/dd" 等)。幅はこの書式で表示した文字列で測る。
+    number_format: str | None = None
+
+    def __post_init__(self) -> None:
+        # 表示を再現できない書式は幅を見積もれないので、宣言の時点で拒否する。
+        if self.number_format is not None:
+            check_number_format(self.number_format)
 
 
 # --- ページ設定 -----------------------------------------------------------
@@ -146,6 +175,7 @@ class Column:
     width: Width
     overflow: OverflowStrategy | None
     join: str | None
+    number_format: str | None = None
 
 
 def columns_of(model: type[Any]) -> list[Column]:
@@ -166,27 +196,30 @@ def columns_of(model: type[Any]) -> list[Column]:
             continue
         overflow = normalize(layout.overflow) if layout.overflow is not None else None
         width = normalize_width(layout.width) if layout.width is not None else Auto()
-        columns.append(Column(index, name, layout.header, width, overflow, layout.join))
+        columns.append(
+            Column(index, name, layout.header, width, overflow, layout.join, layout.number_format)
+        )
         index += 1
     return columns
 
 
-def cell_text(column: Column, row: Any) -> str:
-    """1 セルに表示する文字列を得る。dict / モデルインスタンスの両方に対応。
+def cell_value(column: Column, row: Any) -> CellValue:
+    """1 セルの値(plan に載せる値と、幅計測に使う表示文字列)を得る。
 
-    list 値は `Layout.join`(未指定なら "、")で 1 セルへ結合する。
+    dict / モデルインスタンスの両方に対応。型は保ったまま(`int` を `"12"` にしない)、
+    list 値は `Layout.join`(未指定なら `DEFAULT_JOIN`)で 1 セルへ結合する。
     """
-    value = (
+    raw = (
         row.get(column.field_name)
         if isinstance(row, dict)
         else getattr(row, column.field_name, None)
     )
-    if value is None:
-        return ""
-    if isinstance(value, (list, tuple)):
-        separator = column.join if column.join is not None else "、"
-        return separator.join(str(item) for item in value)
-    return str(value)
+    return to_cell_value(
+        raw,
+        join=column.join if column.join is not None else DEFAULT_JOIN,
+        number_format=column.number_format,
+        field_name=column.field_name,
+    )
 
 
 def _field_names(model: type[Any]) -> list[str]:
@@ -219,15 +252,17 @@ def _report_warnings(layout_warnings: list[LayoutWarning], *, strict: bool) -> N
     solver は警告を送出せず `PlacementPlan.warnings` に積むだけなので、それを
     「落とす」のか「知らせて続行する」のかを決めるのがここ。
 
-    - strict=True:  1 件でもあれば `LayoutError`。見切れた帳票を黙って書き出さない。
+    - strict=True:  見切れ等が 1 件でもあれば `LayoutError`。見切れた帳票を黙って書き出さない。
     - strict=False: `SchemaxlWarning` として通知し、書き出しは続行する。
+
+    `Truncate` による切り詰め(`NON_BLOCKING_WARNING_KINDS`)は利用者が宣言した結果なので、
+    strict でも止めずに常に通知だけする。止めると `Truncate` が事実上使えない。
     """
-    if not layout_warnings:
-        return
-    if strict:
-        first = layout_warnings[0]
+    blocking = [w for w in layout_warnings if w.kind not in NON_BLOCKING_WARNING_KINDS]
+    if strict and blocking:
+        first = blocking[0]
         raise LayoutError(
-            f"レイアウト警告 {len(layout_warnings)} 件。最初の 1 件"
+            f"レイアウト警告 {len(blocking)} 件。最初の 1 件"
             f"(行 {first.row} / 列 {first.col}): {first.message}"
             " — 警告を許容して書き出すなら strict=False",
             overage_pt=first.overage_pt,
@@ -266,27 +301,63 @@ class Report(Generic[RowT]):
         raise LayoutError("Table に行モデルがバインドされていない(bind / Report ジェネリクス)")
 
     @classmethod
-    def render(cls, rows: list[RowInput], path: str, *, strict: bool = True) -> None:
-        """rows を帳票化して path (xlsx) に書き出す。
+    def plan(
+        cls,
+        rows: list[RowInput],
+        *,
+        measure: TextMeasurer | None = None,
+        sheet_name: str | None = None,
+    ) -> PlacementPlan:
+        """rows を検証して制約を解き、配置計画(`PlacementPlan`)を返す。書き出しはしない。
 
         rows は dict のリスト(キー → フィールド名)またはタプル / リストの
         リスト(フィールド宣言順で位置マップ)を受け付ける。各行は内部で
         行モデルへ変換され、Pydantic のデータ制約で検証される。
 
-        `strict=True`(既定)は、`Shrink` の下限でも収まらない等のレイアウト警告が
-        1 件でもあれば `LayoutError` を送出し、ファイルを書き出さない。見切れた帳票を
-        黙って出さないための既定。警告を承知で書き出したい場合は `strict=False`
-        (`SchemaxlWarning` として通知したうえで続行する)。
-
-        パイプライン: モデル → solver(制約解決)→ PlacementPlan → backend(書き出し)。
+        `measure` は文字幅の計測器(`(text, font_pt) -> pt`)。未指定なら
+        `default_measure`(東アジア文字幅による近似)。レイアウト警告は送出せず
+        `plan.warnings` に載せたまま返す(扱いを決めるのは `render` の `strict`)。
         """
         # solver は本モジュールへ依存するため、循環 import 回避で遅延 import する。
-        from schemaxl.backends.openpyxl_backend import write_xlsx
         from schemaxl.core.solver import solve
 
         row_model = cls._row_model()
         table = cls.body if cls.body.bind is not None else replace(cls.body, bind=row_model)
         validated = [_coerce_row(row_model, row) for row in rows]
-        plan = solve(cls.page, table, validated)
+        return solve(
+            cls.page,
+            table,
+            validated,
+            measure=measure if measure is not None else default_measure,
+            sheet_name=sheet_name,
+        )
+
+    @classmethod
+    def render(
+        cls,
+        rows: list[RowInput],
+        path: StrPath,
+        *,
+        measure: TextMeasurer | None = None,
+        backend: Backend | None = None,
+        sheet_name: str | None = None,
+        strict: bool = True,
+    ) -> None:
+        """rows を帳票化して path に書き出す。`plan` を作って backend へ渡すだけの配線。
+
+        - `measure` / `sheet_name` は `plan` と同じ。
+        - `backend` は書き出し先の実装(`Backend`)。未指定なら openpyxl で xlsx を書く。
+        - `strict=True`(既定)は、`Shrink` の下限でも収まらない等のレイアウト警告が
+          1 件でもあれば `LayoutError` を送出し、ファイルを書き出さない。見切れた帳票を
+          黙って出さないための既定。警告を承知で書き出したい場合は `strict=False`
+          (`SchemaxlWarning` として通知したうえで続行する)。
+
+        パイプライン: モデル → solver(制約解決)→ PlacementPlan → backend(書き出し)。
+        """
+        plan = cls.plan(rows, measure=measure, sheet_name=sheet_name)
         _report_warnings(plan.warnings, strict=strict)
-        write_xlsx(plan, path)
+        if backend is None:
+            from schemaxl.backends.openpyxl_backend import OpenpyxlBackend
+
+            backend = OpenpyxlBackend()
+        backend.write(plan, path)

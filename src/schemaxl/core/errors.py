@@ -15,6 +15,23 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+# LayoutWarning.kind の値。
+# - overflow:  意図せず見切れる(Shrink の下限でも収まらない等)。strict で LayoutError になる。
+# - truncated: Truncate を宣言した列で切り詰めが起きた。宣言どおりの結果なので strict でも
+#              止めず、常に SchemaxlWarning で通知する(黙って情報を落とさない)。
+WARNING_OVERFLOW = "overflow"
+WARNING_TRUNCATED = "truncated"
+# 以下は静的検証(`schemaxl check`)だけが出す種別。
+# - layout_error: 最悪ケースで solver が LayoutError を送出する(列幅・行高がページに収まらない)。
+# - unbounded:    上限(max_length)が無く、最悪ケースを作れないので検証できない列。
+# - no_layout:    Layout が付いておらず列にならないフィールド(意図的か確認したい)。
+WARNING_LAYOUT_ERROR = "layout_error"
+WARNING_UNBOUNDED = "unbounded"
+WARNING_NO_LAYOUT = "no_layout"
+
+# strict でも LayoutError へ昇格させない種別。利用者が明示的に選んだ結果だけを入れる。
+NON_BLOCKING_WARNING_KINDS = frozenset({WARNING_TRUNCATED})
+
 
 class LayoutError(Exception):
     """レイアウトがページに収まらないことを表す。
@@ -41,7 +58,7 @@ class LayoutWarning:
 
     `PlacementPlan` に載せて直列化されるため、標準型だけで構成する。
 
-    - kind:       警告の種別("overflow" など)。機械的な分岐に使う。
+    - kind:       警告の種別(`WARNING_OVERFLOW` / `WARNING_TRUNCATED`)。機械的な分岐に使う。
     - field_name: 原因となったモデルのフィールド名。
     - row / col:  シート座標(1 始まり)。位置が特定できる場合のみ。
     - overage_pt: 割り当て幅をどれだけ超過したか(pt)。

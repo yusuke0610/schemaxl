@@ -26,6 +26,9 @@ dependencies = [
     "openpyxl>=3.1",
 ]
 
+[project.scripts]
+schemaxl = "schemaxl.cli:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",

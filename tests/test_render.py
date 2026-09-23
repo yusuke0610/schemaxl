@@ -13,9 +13,10 @@ import pytest
 from openpyxl import load_workbook
 from pydantic import BaseModel, Field, ValidationError
 
+from schemaxl import PlacementPlan
 from schemaxl.core.errors import LayoutError, SchemaxlWarning
 from schemaxl.core.model import A4, Auto, Layout, Report, Table
-from schemaxl.core.overflow import Shrink
+from schemaxl.core.overflow import Shrink, Truncate
 from schemaxl.core.units import mm
 
 
@@ -131,3 +132,138 @@ def test_render_does_not_warn_when_everything_fits(tmp_path) -> None:
         warnings.simplefilter("error", SchemaxlWarning)
         AllergyReport.render([{"child_name": "山田", "allergens": ["卵"]}], str(path))
     assert path.exists()
+
+
+# --- 拡張点(plan / measure / backend / sheet_name) -------------------------
+
+
+class RecordingBackend:
+    """受け取った plan と path を記録するだけの Backend。ファイルは書かない。"""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[PlacementPlan, object]] = []
+
+    def write(self, plan: PlacementPlan, path: object) -> None:
+        self.calls.append((plan, path))
+
+
+def test_plan_returns_the_placement_plan_without_writing() -> None:
+    plan = AllergyReport.plan([{"child_name": "山田", "allergens": ["卵", "乳"]}])
+    assert isinstance(plan, PlacementPlan)
+    values = {(c.row, c.col): c.value for c in plan.cells}
+    assert values[(2, 1)] == "山田"
+    assert values[(2, 2)] == "卵、乳"
+
+
+def test_plan_keeps_warnings_instead_of_raising() -> None:
+    # strict の判定は render の責務。plan は警告を載せて返すだけ。
+    plan = TightReport.plan(CLIPPED)
+    assert [w.kind for w in plan.warnings] == ["overflow"]
+
+
+def test_render_hands_the_plan_to_the_given_backend(tmp_path) -> None:
+    backend = RecordingBackend()
+    path = tmp_path / "report.xlsx"
+    AllergyReport.render([{"child_name": "山田", "allergens": []}], path, backend=backend)
+
+    assert len(backend.calls) == 1
+    plan, received_path = backend.calls[0]
+    assert received_path == path
+    assert plan == AllergyReport.plan([{"child_name": "山田", "allergens": []}])
+    # 既定の openpyxl バックエンドは使われていない。
+    assert not path.exists()
+
+
+def test_strict_render_does_not_call_the_backend_on_warnings(tmp_path) -> None:
+    backend = RecordingBackend()
+    with pytest.raises(LayoutError):
+        TightReport.render(CLIPPED, tmp_path / "report.xlsx", backend=backend)
+    assert backend.calls == []
+
+
+def test_injected_measure_drives_column_widths() -> None:
+    rows = [{"child_name": "山田", "allergens": ["卵"]}]
+
+    def wide(text: str, font_pt: float) -> float:
+        return len(text) * font_pt * 3  # 既定の計測より 3 倍以上広く見積もる
+
+    default_plan = AllergyReport.plan(rows)
+    wide_plan = AllergyReport.plan(rows, measure=wide)
+    assert wide_plan.column_widths[1] > default_plan.column_widths[1]
+
+
+def test_sheet_name_is_carried_by_the_plan_and_written(tmp_path) -> None:
+    rows = [{"child_name": "山田", "allergens": []}]
+    assert AllergyReport.plan(rows, sheet_name="3年生").sheet_name == "3年生"
+
+    path = tmp_path / "report.xlsx"
+    AllergyReport.render(rows, path, sheet_name="3年生")
+    assert load_workbook(str(path)).active.title == "3年生"
+
+
+def test_render_accepts_pathlike(tmp_path) -> None:
+    path = tmp_path / "report.xlsx"  # pathlib.Path のまま渡す
+    AllergyReport.render([{"child_name": "山田", "allergens": []}], path)
+    assert path.exists()
+
+
+# --- セル値の型(数値を文字列にしない) --------------------------------------
+
+
+class OrderRow(BaseModel):
+    item: Annotated[str, Layout(header="品目")]
+    qty: Annotated[int, Layout(header="数量", number_format="#,##0")]
+
+
+class OrderReport(Report[OrderRow]):
+    page = A4(margin=mm(15))
+    body = Table()
+
+
+def test_render_writes_numbers_as_numbers(tmp_path) -> None:
+    path = tmp_path / "report.xlsx"
+    OrderReport.render([{"item": "牛乳", "qty": 12}, ("卵", 1500)], path)
+
+    ws = load_workbook(str(path)).active
+    assert ws.cell(row=2, column=2).value == 12  # "12" ではない
+    assert ws.cell(row=3, column=2).value == 1500
+    assert ws.cell(row=3, column=2).number_format == "#,##0"
+
+
+# --- Truncate の切り詰めは strict でも止めない(宣言どおりの結果) ------------
+
+
+class NoteRow(BaseModel):
+    note: Annotated[str, Layout(header="備考", width=Auto(max=mm(20)), overflow=Truncate())]
+
+
+class NoteReport(Report[NoteRow]):
+    page = A4(margin=mm(15))
+    body = Table()
+
+
+def test_truncation_is_reported_but_does_not_block_a_strict_render(tmp_path) -> None:
+    path = tmp_path / "report.xlsx"
+    with pytest.warns(SchemaxlWarning, match="切り詰めた"):
+        NoteReport.render([{"note": "あ" * 30}], str(path))  # strict=True(既定)
+
+    ws = load_workbook(str(path)).active
+    assert ws.cell(row=2, column=1).value.endswith("…")
+
+
+def test_overflow_still_blocks_a_strict_render_alongside_truncation(tmp_path) -> None:
+    # 切り詰めは許しても、意図しない見切れ(Shrink の下限割れ)は従来どおり止める。
+    class MixedRow(BaseModel):
+        note: Annotated[str, Layout(header="備考", width=Auto(max=mm(20)), overflow=Truncate())]
+        label: Annotated[
+            str, Layout(header="ラベル", width=Auto(min=mm(20)), overflow=Shrink(min_pt=8))
+        ]
+
+    class MixedReport(Report[MixedRow]):
+        page = A4(margin=mm(15))
+        body = Table()
+
+    path = tmp_path / "report.xlsx"
+    with pytest.raises(LayoutError, match="収まらない"):
+        MixedReport.render([{"note": "あ" * 30, "label": "あ" * 30}], str(path))
+    assert not path.exists()

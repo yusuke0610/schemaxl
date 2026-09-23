@@ -66,6 +66,61 @@ AllergyReport.render(rows, "report.xlsx", strict=False)  # 警告を通知して
 - `strict=True`(既定) … 警告が 1 件でもあれば `LayoutError` を送出し、**ファイルを書き出さない。**
   見切れた帳票が黙って出来上がるのを防ぐ。
 - `strict=False` … `SchemaxlWarning` として通知したうえで書き出す。
+- `Truncate` による切り詰め(`kind="truncated"`)だけは、利用者が宣言した結果なので `strict=True` でも
+  止めずに `SchemaxlWarning` で通知して書き出す(情報が落ちたことは必ず知らせる)。
+
+### 配置計画の取得と拡張点
+
+`render` は「`plan` で配置計画を作り、backend へ渡す」だけの薄い配線になっている。
+中間表現の `PlacementPlan` は `plan` で直接取り出せる(書き出しはしない、警告も送出しない)。
+
+```python
+plan = AllergyReport.plan(rows)                       # PlacementPlan(純データ)
+plan.warnings                                         # 見切れ等の警告を検査できる
+
+AllergyReport.render(
+    rows,
+    Path("out/report.xlsx"),                          # str / os.PathLike
+    measure=my_measure,                               # 文字幅計測器 (text, font_pt) -> pt
+    backend=MyBackend(),                              # Backend プロトコル(write(plan, path))
+    sheet_name="3年生",                                # plan に載り、backend が写す
+)
+```
+
+- `measure` … 列幅・折り返し・縮小の判定に使う文字幅計測器。未指定なら東アジア文字幅による近似。
+- `backend` … `write(plan, path) -> None` を持つ任意のオブジェクト(`schemaxl.Backend`)。
+  未指定なら openpyxl で xlsx を書く(`schemaxl.backends.openpyxl_backend.OpenpyxlBackend`)。
+- `sheet_name` … solver が plan に載せ、backend は写すだけ。Excel の制約
+  (31 文字以内、`[]:*?/\` を含まない)に反すると openpyxl バックエンドが `ValueError`。
+
+### レンダリング前の静的検証(`schemaxl check`)
+
+データを一切見ずに、行モデルの宣言だけから「紙に収まらない」構成を検出する。
+`max_length` いっぱいまで最も幅の広い文字で埋めた **最悪ケースの 1 行** を実物の solver に
+通すので、検証とレンダリングの判定は食い違わない。
+
+```bash
+schemaxl check myapp.reports:AllergyReport            # error があれば終了コード 1
+schemaxl check --strict myapp.reports:AllergyReport   # warning も失敗扱い
+schemaxl check --format json myapp.reports:AllergyReport
+```
+
+```python
+from schemaxl import check
+findings = check(AllergyReport)                       # list[LayoutWarning](実行時の警告と同じ型)
+```
+
+| kind | 重さ | 内容 |
+| --- | --- | --- |
+| `layout_error` | error | Auto 列の下限合計が印字可能幅を超える、Fill 列の下限を賄えない、折り返した行がページに収まらない |
+| `overflow` | error | `Shrink` の `min_pt` まで縮めても `max_length` の文字列が収まらない等 |
+| `truncated` | warning | 最悪ケースで `Truncate` の切り詰めが起きる |
+| `unbounded` | warning | `max_length` の無い `str` 列・`list` 列(上限が無く原理的に検証できない) |
+| `no_layout` | warning | `Layout` の付いていないフィールド(列にならない) |
+
+error / warning の線引きは `render(strict=True)` が止めるもの・止めないものと同じ。
+終了コードは 0(問題なし)/ 1(error、`--strict` なら warning も)/ 2(対象を import できない等)。
+数値・日付の列は最悪ケースを作らない(桁数の上限を宣言する手段がまだ無い)。
 
 ## API スケッチ
 
@@ -105,7 +160,17 @@ class AllergyReport(Report[AllergyRow]):
 - **ヘッダ行もデータ行と同じ overflow 戦略を通る。** 列幅が頭打ちになったとき、ヘッダだけ
   1 行固定だと無警告で見切れるため。`Wrap` ならヘッダも折り返してヘッダ行の高さが伸び、
   `repeat_header` はその実高を毎ページ差し引く。
-- `overflow` … 収まらないときの戦略。`Wrap()`(折り返し)/ `Shrink(min_pt=...)`(フォント縮小、下限 pt 指定)。引数なしの戦略は `Wrap` / `Wrap()` どちらでも可(内部でインスタンスに正規化)。
+- `overflow` … 収まらないときの戦略。`Wrap()`(折り返し)/ `Shrink(min_pt=...)`(フォント縮小、下限 pt 指定)/
+  `Truncate(marker="…")`(収まる位置で切り詰めて省略記号を付す。絵文字や結合文字を途中で割らない)。
+  引数なしの戦略は `Wrap` / `Wrap()` どちらでも可(内部でインスタンスに正規化)。
+- **セル値はモデルの型のまま書き出す。** `int` / `float` / `Decimal` は数値、`date` / `datetime` は日付、
+  `bool` は論理値として Excel に入る(SUM・並べ替え・フィルタが効く)。`list` は `join`(既定 `"、"`)で結合した文字列。
+- `number_format` … Excel の表示書式。`Layout(header="金額", number_format="#,##0")` のように指定する。
+  **列幅はこの書式で表示した文字列で測る**(`1234567` は `"1,234,567"` の幅)。表示を再現できる書式だけを
+  受け付ける: `0` / `0.00` / `#,##0` / `#,##0.00` / `0%` / `0.0%` と、`yyyy-mm-dd` / `yyyy/mm/dd` / `yyyy/m/d` /
+  `hh:mm` / `hh:mm:ss` とその日時の組み合わせ。それ以外は宣言時に `ValueError`。日付の既定は `yyyy-mm-dd`。
+- 数値・日付は Excel では折り返せない(収まらないと `###` になる)ため、`Wrap` 列でも折り返さず、
+  収まらなければレイアウト警告になる。
 - `break_inside="avoid_row"` … 1 行の途中でページを割らない。
 - `repeat_header=True` … ヘッダ行を各ページの先頭で繰り返す。
 - **行モデルは `Report[AllergyRow]` のジェネリクスから推論される**ため、`Table(bind=...)` は省略できる(同じ情報を 2 回書かない)。明示したい場合は `Table(bind=AllergyRow)` も可。
@@ -127,7 +192,10 @@ Pydantic モデル(単一の真実)
 | 単位 | `core/units.py` | `mm`, `pt` などの単位型 |
 | overflow 戦略 | `core/overflow.py` | `Wrap`, `Shrink` 等の収まらないときの戦略 |
 | 制約解決 | `core/solver.py` | 列幅・行高・改ページの解決(**純粋関数**) |
+| 静的検証 | `core/check.py` | 最悪ケースの行を solver に通す `check`(**純粋関数**)。CLI は `cli.py` |
+| セル値 | `core/values.py` | 値の型の保持と、書式適用後の表示文字列(幅計測の入力) |
 | 配置計画 | `core/plan.py` | 配置計画の中間表現 `PlacementPlan` |
+| バックエンド | `backends/base.py` | `Backend` プロトコル(出力ライブラリ非依存) |
 | バックエンド | `backends/openpyxl_backend.py` | `PlacementPlan` → xlsx 書き出し |
 
 この分離により、ソルバ層はファイル I/O なしで単体テストでき(`tests/test_solver.py`)、バックエンドは差し替え可能になります。
@@ -185,9 +253,10 @@ pip install -e ".[dev]"
 
 ### 将来構想
 
-- [ ] 制約の静的検証(`schemaxl check`): `max_length` と列幅・overflow 戦略を突き合わせ、破綻しうる組み合わせをレンダリング前に検出
+- [x] 制約の静的検証(`schemaxl check`): `max_length` と列幅・overflow 戦略を突き合わせ、破綻しうる組み合わせをレンダリング前に検出
 - [ ] `Block` のネスト・複数ブロック配置(Sheet → Block → Item 階層)
-- [ ] overflow 戦略の追加: `Ellipsis`(省略記号)/ `SplitBlock`(2 ブロック展開)
+- [x] overflow 戦略の追加: `Truncate`(省略記号で切り詰め)
+- [ ] overflow 戦略の追加: `SplitBlock`(2 ブロック展開。Block 階層の後)
 - [ ] データプロファイリング(実データ / DB スキーマから制約違反を事前検出しレポート)
 - [ ] 極端ケースデータの自動生成(`max_length` ぴったり等)+ スナップショットテスト支援
 - [ ] 帳票仕様書(Markdown)の自動生成

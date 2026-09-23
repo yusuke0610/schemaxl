@@ -40,6 +40,10 @@ jobs:
       - name: Pytest
         run: pytest
 
+      # 自リポジトリの example を静的検証する(ドッグフーディング)。
+      - name: schemaxl check (examples)
+        run: schemaxl check examples.allergy_report:AllergyReport
+
   nix:
     name: nix flake check
     runs-on: ubuntu-latest

@@ -61,8 +61,11 @@ Pydantic モデル(単一の真実)
 | 単位 | `core/units.py` | `mm` / `pt` → `Length` 値オブジェクト(内部基準単位は pt 予定) |
 | overflow | `core/overflow.py` | `Wrap` / `Shrink` と、クラス参照→インスタンスの `normalize` |
 | solver | `core/solver.py` | `resolve_column_widths` / `resolve_row_heights` / `resolve_page_breaks` / `solve` |
+| 静的検証 | `core/check.py` / `cli.py` | 最悪ケースの行を合成して `solve` に通す `check`。CLI は表示と終了コードのみ |
+| セル値 | `core/values.py` | 値 → `CellValue`(plan に載せる JSON 安全な値・種別・`number_format`・幅計測用の表示文字列) |
 | 計画 | `core/plan.py` | `PlacementPlan`(`CellPlacement` / `PageBreak`) |
-| backend | `backends/openpyxl_backend.py` | `write_xlsx(plan, path)` |
+| backend | `backends/base.py` | `Backend` プロトコル(`write(plan, path)`。openpyxl 非依存) |
+| backend | `backends/openpyxl_backend.py` | `write_xlsx(plan, path)` / `OpenpyxlBackend` |
 
 ### ドメインの中心概念
 
