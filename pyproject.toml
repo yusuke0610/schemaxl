@@ -27,10 +27,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# lint / 型検査ツールはマイナーまで固定する。新しいルールが入るたびにコード変更なしで
+# CI が落ちるのを防ぐため(ruff 0.16 の RUF022 で実際に起きた)。更新は Dependabot の
+# PR で行い、その PR 上で CI を通してから取り込む。
 dev = [
     "pytest>=8.0",
-    "ruff>=0.5",
-    "mypy>=1.10",
+    "pytest-cov>=5.0",
+    "ruff==0.16.*",
+    "mypy==2.3.*",
 ]
 
 [project.urls]
@@ -43,6 +47,18 @@ packages = ["src/schemaxl"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# カバレッジ。層ごとの閾値(純粋関数の core は 95%、副作用境界の backends は 85%)は
+# CI で `coverage report --include=... --fail-under=...` として課す。ここは全体の下限。
+[tool.coverage.run]
+source = ["schemaxl"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+skip_covered = true
+exclude_also = ["if TYPE_CHECKING:"]
 
 [tool.ruff]
 src = ["src", "tests"]

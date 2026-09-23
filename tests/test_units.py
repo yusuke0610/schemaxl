@@ -106,3 +106,35 @@ def test_addition_of_many_lengths_accumulates() -> None:
     total = sum((pt(10), pt(20), pt(5)), pt(0))
     assert total.to_pt() == pytest.approx(35.0)
     assert not math.isnan(total.to_pt())
+
+
+# --- 異常系(単位・型の取り違え) ------------------------------------------
+
+
+def test_unknown_unit_is_rejected() -> None:
+    from schemaxl.core.units import Length
+
+    with pytest.raises(ValueError, match="未知の単位"):
+        Length(10, "cm")
+
+
+@pytest.mark.parametrize(
+    "compare",
+    [
+        lambda a: a < 10,
+        lambda a: a <= 10,
+        lambda a: a > 10,
+        lambda a: a >= 10,
+        lambda a: a + 10,
+    ],
+)
+def test_length_does_not_compare_or_add_with_bare_numbers(compare) -> None:
+    # 単位のない数値との比較・加算は意味を持たないので TypeError(NotImplemented 経由)。
+    with pytest.raises(TypeError):
+        compare(mm(10))
+
+
+def test_all_orderings_use_physical_size_across_units() -> None:
+    assert pt(72) <= mm(26)
+    assert mm(26) > pt(72)
+    assert not mm(10) >= mm(20)

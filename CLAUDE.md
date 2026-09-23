@@ -12,13 +12,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 開発コマンド
 
 Nix + direnv 前提の環境。`.envrc` で `use flake` しているため、`direnv allow` 済みなら
-devShell の Python(pydantic / openpyxl / pytest / mypy / ruff 入り)が自動で有効になる。
+devShell の Python(pydantic / openpyxl / pytest / pytest-cov / mypy / ruff 入り)が自動で有効になる。
 direnv を使わない場合は `nix develop` に入るか、`pip install -e ".[dev]"` する。
 
 ```bash
 pytest                       # テスト実行
 pytest tests/test_solver.py  # 単一ファイル
 pytest tests/test_solver.py::test_resolve_page_breaks_avoid_row  # 単一テスト
+pytest --cov                 # カバレッジつき(全体 90% 未満で失敗)
+coverage report --include='*/schemaxl/core/*' --fail-under=95      # core の閾値(CI と同じ)
+coverage report --include='*/schemaxl/backends/*' --fail-under=85  # backends の閾値
 
 ruff check .                 # lint
 ruff format --check .        # フォーマット検証(CI と同じ)
@@ -26,9 +29,15 @@ ruff format .                # フォーマット適用
 mypy                         # 型チェック(strict。packages=["schemaxl"] を対象)
 ```
 
-CI(`.github/workflows/ci.yml`)は Python 3.10 / 3.11 / 3.12 で
-`ruff check` → `ruff format --check` → `mypy` → `pytest` の順に回す。
-`mypy` は `strict = true`、`ruff` は `line-length = 100`。この 4 つを緑にすることがマージ条件。
+CI(`.github/workflows/ci.yml`)は Python 3.10 / 3.11 / 3.12 / 3.13 で
+`ruff check` → `ruff format --check` → `mypy` → `pytest --cov` → 層ごとのカバレッジ閾値
+(core 95% / backends 85%)の順に回し、別ジョブで sdist / wheel のビルドと `twine check` を行う。
+`mypy` は `strict = true`、`ruff` は `line-length = 100`。これらを緑にすることがマージ条件。
+ruff / mypy はマイナーまで固定している(更新は Dependabot の PR 経由)。
+
+変更は `CHANGELOG.md` の Unreleased に追記する。リリースは `__version__` を上げて
+`v<version>` タグを push する(`.github/workflows/release.yml` がタグと `__version__` の
+一致を確かめてから Trusted Publishing で PyPI へ公開する)。
 
 テストは units / overflow / solver(I/O レス)/ backend(読み戻し)/ render(E2E)
 の各層に対応する。solver 層のテストにファイル I/O や openpyxl を持ち込まないこと。
