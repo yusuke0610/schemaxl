@@ -2,31 +2,109 @@
 
 PlacementPlan を受け取り、openpyxl で .xlsx を書き出す。
 ここが唯一の副作用境界であり、レイアウト判断は一切行わない
-(幅・高さ・改ページはすべて solver が決定済みの前提)。
+(用紙・余白・幅・高さ・改ページはすべて solver が決定済みの前提)。
 """
 
 from __future__ import annotations
+
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Any
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.pagebreak import Break
 
-from schemaxl.core.plan import PlacementPlan
+from schemaxl.backends.base import StrPath
+from schemaxl.core.plan import CellPlacement, CellRange, PageSetup, PlacementPlan
+from schemaxl.core.units import pt_to_excel_margin
+
+# 用紙の呼称 → OOXML の paperSize コード。Excel 固有の符号化であって
+# レイアウト判断ではないため、backend 側に置く。
+PAPER_SIZE_CODES = {"A4": 9}
+
+# Excel のシート名の制約。Excel 固有の決まりなので backend 側で検査する。
+MAX_SHEET_NAME_LENGTH = 31
+_FORBIDDEN_SHEET_NAME_CHARS = frozenset("[]:*?/\\")
 
 
-def write_xlsx(plan: PlacementPlan, path: str) -> None:
+def _check_sheet_name(name: str) -> None:
+    """Excel がシート名として受け付けない名前を ValueError にする。"""
+    if not name or len(name) > MAX_SHEET_NAME_LENGTH:
+        raise ValueError(f"シート名は 1〜{MAX_SHEET_NAME_LENGTH} 文字: {name!r}({len(name)} 文字)")
+    forbidden = sorted(set(name) & _FORBIDDEN_SHEET_NAME_CHARS)
+    if forbidden:
+        raise ValueError(f"シート名に使えない文字 {''.join(forbidden)!r} を含む: {name!r}")
+
+
+def _apply_page_setup(worksheet: Any, page: PageSetup) -> None:
+    """solver が決めた用紙・向き・余白をシートへ写す。"""
+    code = PAPER_SIZE_CODES.get(page.paper)
+    if code is None:
+        raise ValueError(f"openpyxl バックエンドが知らない用紙: {page.paper!r}")
+    worksheet.page_setup.paperSize = code
+    worksheet.page_setup.orientation = page.orientation
+
+    # OOXML のページ余白はインチ。
+    margins = worksheet.page_margins
+    margins.top = pt_to_excel_margin(page.margin_top_pt)
+    margins.right = pt_to_excel_margin(page.margin_right_pt)
+    margins.bottom = pt_to_excel_margin(page.margin_bottom_pt)
+    margins.left = pt_to_excel_margin(page.margin_left_pt)
+    # ヘッダ / フッタ領域も明示する。既定の 0.3 inch を残すと、solver が
+    # 想定していない余白が本文の上下に入る。
+    margins.header = pt_to_excel_margin(page.header_margin_pt)
+    margins.footer = pt_to_excel_margin(page.footer_margin_pt)
+
+
+def _decode_value(cell: CellPlacement) -> Any:
+    """plan 上で文字列に符号化された値を元の型へ戻す(Excel に数値・日付として書くため)。
+
+    符号化の解読であってレイアウト判断ではない。表示書式は solver が決めた
+    `number_format` をそのまま使う。
+    """
+    if cell.value is None or not isinstance(cell.value, str):
+        return cell.value
+    if cell.value_kind == "decimal":
+        return Decimal(cell.value)
+    if cell.value_kind == "datetime":
+        return datetime.fromisoformat(cell.value)
+    if cell.value_kind == "date":
+        return date.fromisoformat(cell.value)
+    return cell.value
+
+
+def _a1_range(area: CellRange) -> str:
+    """CellRange を A1 記法("A1:C10")へ変換する。"""
+    first = f"{get_column_letter(area.first_col)}{area.first_row}"
+    last = f"{get_column_letter(area.last_col)}{area.last_row}"
+    return f"{first}:{last}"
+
+
+def write_xlsx(plan: PlacementPlan, path: StrPath) -> None:
     """PlacementPlan を path の .xlsx として書き出す。
 
+    - sheet_name を反映(Excel のシート名制約に反すれば ValueError)
+    - page(用紙・向き・余白)/ print_area を反映
     - column_widths / row_heights を反映
-    - CellPlacement を書き込み(結合セル・フォント pt・折り返しを適用)
+    - CellPlacement を書き込み(値の型・表示書式・結合セル・フォント pt・折り返しを適用)
     - page_breaks / 印刷タイトル行(repeat_header)を反映
     """
     workbook = Workbook()
     worksheet = workbook.active
 
+    if plan.sheet_name is not None:
+        _check_sheet_name(plan.sheet_name)
+        worksheet.title = plan.sheet_name
+
+    if plan.page is not None:
+        _apply_page_setup(worksheet, plan.page)
+
     for cell in plan.cells:
-        target = worksheet.cell(row=cell.row, column=cell.col, value=cell.value)
+        target = worksheet.cell(row=cell.row, column=cell.col, value=_decode_value(cell))
+        if cell.number_format is not None:
+            target.number_format = cell.number_format
         if cell.font_pt is not None:
             target.font = Font(size=cell.font_pt)
         target.alignment = Alignment(wrap_text=cell.wrap, vertical="top")
@@ -53,4 +131,14 @@ def write_xlsx(plan: PlacementPlan, path: str) -> None:
     if plan.header_rows > 0:
         worksheet.print_title_rows = f"1:{plan.header_rows}"
 
+    if plan.print_area is not None:
+        worksheet.print_area = _a1_range(plan.print_area)
+
     workbook.save(path)
+
+
+class OpenpyxlBackend:
+    """openpyxl で .xlsx を書き出す `Backend` 実装。`Report.render` の既定。"""
+
+    def write(self, plan: PlacementPlan, path: StrPath) -> None:
+        write_xlsx(plan, path)

@@ -52,6 +52,45 @@ AllergyReport.render(rows, "report.xlsx")
 いずれの場合も、渡された行は内部で `AllergyRow` に変換され、Pydantic の
 データ制約(`max_length` 等)で検証されてからレンダリングされる。
 
+### 見切れたときの挙動(`strict`)
+
+`Shrink(min_pt=...)` の下限まで縮めても収まらない、といったレイアウト警告は
+solver が `PlacementPlan.warnings` に構造化して積む(行・列・フィールド名・超過量)。
+solver 自身は送出しない。それをどう扱うかは `render` が決める。
+
+```python
+AllergyReport.render(rows, "report.xlsx")                # strict=True(既定)
+AllergyReport.render(rows, "report.xlsx", strict=False)  # 警告を通知して書き出す
+```
+
+- `strict=True`(既定) … 警告が 1 件でもあれば `LayoutError` を送出し、**ファイルを書き出さない。**
+  見切れた帳票が黙って出来上がるのを防ぐ。
+- `strict=False` … `SchemaxlWarning` として通知したうえで書き出す。
+
+### 配置計画の取得と拡張点
+
+`render` は「`plan` で配置計画を作り、backend へ渡す」だけの薄い配線になっている。
+中間表現の `PlacementPlan` は `plan` で直接取り出せる(書き出しはしない、警告も送出しない)。
+
+```python
+plan = AllergyReport.plan(rows)                       # PlacementPlan(純データ)
+plan.warnings                                         # 見切れ等の警告を検査できる
+
+AllergyReport.render(
+    rows,
+    Path("out/report.xlsx"),                          # str / os.PathLike
+    measure=my_measure,                               # 文字幅計測器 (text, font_pt) -> pt
+    backend=MyBackend(),                              # Backend プロトコル(write(plan, path))
+    sheet_name="3年生",                                # plan に載り、backend が写す
+)
+```
+
+- `measure` … 列幅・折り返し・縮小の判定に使う文字幅計測器。未指定なら東アジア文字幅による近似。
+- `backend` … `write(plan, path) -> None` を持つ任意のオブジェクト(`schemaxl.Backend`)。
+  未指定なら openpyxl で xlsx を書く(`schemaxl.backends.openpyxl_backend.OpenpyxlBackend`)。
+- `sheet_name` … solver が plan に載せ、backend は写すだけ。Excel の制約
+  (31 文字以内、`[]:*?/\` を含まない)に反すると openpyxl バックエンドが `ValueError`。
+
 ## API スケッチ
 
 > 以下は設計の完成イメージです。**まだ動作しません**(骨格のみ)。
@@ -79,8 +118,26 @@ class AllergyReport(Report[AllergyRow]):
 
 - `Field(...)` は **データ制約**(Pydantic 本来の役割)。
 - `Layout(...)` は **レイアウト制約**。`Annotated` によって型の隣に同居させ、単一の真実に統合する。
-- `width` … `Auto(min=...)`(内容に応じ自動、下限指定可)/ `Fill`(残り幅を埋める)。
+- `width` … `Auto(min=..., max=...)`(内容に応じ自動、下限・上限を指定可)/
+  `Fill(min=...)`(残り幅を埋める、下限指定可)。引数なしなら `Fill` / `Fill()` どちらでも可
+  (内部でインスタンスに正規化)。残り幅が下限に満たない構成は `LayoutError`
+  (幅 0 の列を黙って作らない)。
+- **Auto 列は overflow を宣言したときだけ幅が頭打ちになる。** 上限は `max`、未指定なら `min`、
+  それも無ければ印字可能幅を列数で割った値。上限が無いと Auto 列は内容が 1 行で収まる幅を
+  常に確保してしまい、`Wrap` / `Shrink` の出番が来ない。overflow を宣言していない列は
+  切り詰める術がないので、`max` を書いても切り詰めず、従来どおり内容幅を確保する。
+- **ヘッダ行もデータ行と同じ overflow 戦略を通る。** 列幅が頭打ちになったとき、ヘッダだけ
+  1 行固定だと無警告で見切れるため。`Wrap` ならヘッダも折り返してヘッダ行の高さが伸び、
+  `repeat_header` はその実高を毎ページ差し引く。
 - `overflow` … 収まらないときの戦略。`Wrap()`(折り返し)/ `Shrink(min_pt=...)`(フォント縮小、下限 pt 指定)。引数なしの戦略は `Wrap` / `Wrap()` どちらでも可(内部でインスタンスに正規化)。
+- **セル値はモデルの型のまま書き出す。** `int` / `float` / `Decimal` は数値、`date` / `datetime` は日付、
+  `bool` は論理値として Excel に入る(SUM・並べ替え・フィルタが効く)。`list` は `join`(既定 `"、"`)で結合した文字列。
+- `number_format` … Excel の表示書式。`Layout(header="金額", number_format="#,##0")` のように指定する。
+  **列幅はこの書式で表示した文字列で測る**(`1234567` は `"1,234,567"` の幅)。表示を再現できる書式だけを
+  受け付ける: `0` / `0.00` / `#,##0` / `#,##0.00` / `0%` / `0.0%` と、`yyyy-mm-dd` / `yyyy/mm/dd` / `yyyy/m/d` /
+  `hh:mm` / `hh:mm:ss` とその日時の組み合わせ。それ以外は宣言時に `ValueError`。日付の既定は `yyyy-mm-dd`。
+- 数値・日付は Excel では折り返せない(収まらないと `###` になる)ため、`Wrap` 列でも折り返さず、
+  収まらなければレイアウト警告になる。
 - `break_inside="avoid_row"` … 1 行の途中でページを割らない。
 - `repeat_header=True` … ヘッダ行を各ページの先頭で繰り返す。
 - **行モデルは `Report[AllergyRow]` のジェネリクスから推論される**ため、`Table(bind=...)` は省略できる(同じ情報を 2 回書かない)。明示したい場合は `Table(bind=AllergyRow)` も可。
@@ -102,7 +159,9 @@ Pydantic モデル(単一の真実)
 | 単位 | `core/units.py` | `mm`, `pt` などの単位型 |
 | overflow 戦略 | `core/overflow.py` | `Wrap`, `Shrink` 等の収まらないときの戦略 |
 | 制約解決 | `core/solver.py` | 列幅・行高・改ページの解決(**純粋関数**) |
+| セル値 | `core/values.py` | 値の型の保持と、書式適用後の表示文字列(幅計測の入力) |
 | 配置計画 | `core/plan.py` | 配置計画の中間表現 `PlacementPlan` |
+| バックエンド | `backends/base.py` | `Backend` プロトコル(出力ライブラリ非依存) |
 | バックエンド | `backends/openpyxl_backend.py` | `PlacementPlan` → xlsx 書き出し |
 
 この分離により、ソルバ層はファイル I/O なしで単体テストでき(`tests/test_solver.py`)、バックエンドは差し替え可能になります。

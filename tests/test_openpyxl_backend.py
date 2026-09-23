@@ -7,10 +7,14 @@
 (core 層のテストは純 Python に保つ、という制約の対象外)。
 """
 
+from dataclasses import replace
+
+import pytest
 from openpyxl import load_workbook
 
-from schemaxl.backends.openpyxl_backend import write_xlsx
-from schemaxl.core.plan import CellPlacement, PageBreak, PlacementPlan
+from schemaxl.backends.openpyxl_backend import OpenpyxlBackend, write_xlsx
+from schemaxl.core.plan import CellPlacement, CellRange, PageBreak, PageSetup, PlacementPlan
+from schemaxl.core.units import mm
 
 
 def _fixed_plan() -> PlacementPlan:
@@ -27,6 +31,17 @@ def _fixed_plan() -> PlacementPlan:
         column_widths={1: 12.0, 2: 20.0},
         row_heights={1: 14.0, 2: 13.2, 3: 13.2},
         header_rows=1,
+        page=PageSetup(
+            paper="A4",
+            orientation="portrait",
+            width_pt=mm(210).to_pt(),
+            height_pt=mm(297).to_pt(),
+            margin_top_pt=mm(15).to_pt(),
+            margin_right_pt=mm(15).to_pt(),
+            margin_bottom_pt=mm(15).to_pt(),
+            margin_left_pt=mm(15).to_pt(),
+        ),
+        print_area=CellRange(first_row=1, first_col=1, last_row=3, last_col=2),
     )
 
 
@@ -76,3 +91,130 @@ def test_column_widths_and_row_heights_are_written(tmp_path) -> None:
     ws = load_workbook(str(path)).active
     assert ws.column_dimensions["A"].width == 12.0
     assert ws.row_dimensions[2].height == 13.2
+
+
+def test_paper_size_and_orientation_are_written(tmp_path) -> None:
+    path = tmp_path / "report.xlsx"
+    write_xlsx(_fixed_plan(), str(path))
+
+    ws = load_workbook(str(path)).active
+    assert ws.page_setup.paperSize == 9  # OOXML の A4
+    assert ws.page_setup.orientation == "portrait"
+
+
+def test_landscape_orientation_is_written(tmp_path) -> None:
+    plan = _fixed_plan()
+    assert plan.page is not None
+    plan.page = replace(plan.page, orientation="landscape")
+    path = tmp_path / "report.xlsx"
+    write_xlsx(plan, str(path))
+
+    ws = load_workbook(str(path)).active
+    assert ws.page_setup.orientation == "landscape"
+
+
+def test_margins_are_written_in_inches(tmp_path) -> None:
+    """solver が pt で決めた余白が、OOXML の単位(インチ)へ変換されて載ること。"""
+    path = tmp_path / "report.xlsx"
+    write_xlsx(_fixed_plan(), str(path))
+
+    ws = load_workbook(str(path)).active
+    expected = 15 / 25.4  # 15mm をインチへ
+    assert ws.page_margins.top == pytest.approx(expected)
+    assert ws.page_margins.right == pytest.approx(expected)
+    assert ws.page_margins.bottom == pytest.approx(expected)
+    assert ws.page_margins.left == pytest.approx(expected)
+    # ヘッダ / フッタ領域は明示的に 0(openpyxl 既定の 0.3 inch を残さない)。
+    assert ws.page_margins.header == pytest.approx(0.0)
+    assert ws.page_margins.footer == pytest.approx(0.0)
+
+
+def test_print_area_is_written(tmp_path) -> None:
+    path = tmp_path / "report.xlsx"
+    write_xlsx(_fixed_plan(), str(path))
+
+    ws = load_workbook(str(path)).active
+    # ヘッダ 1 行 + データ 2 行 × 2 列。
+    assert "$A$1:$B$3" in str(ws.print_area)
+
+
+def test_plan_without_page_setup_leaves_defaults(tmp_path) -> None:
+    """page が None の plan は書き出せる(ページ設定に触れない)。"""
+    path = tmp_path / "report.xlsx"
+    write_xlsx(PlacementPlan(cells=[CellPlacement(row=1, col=1, value="x")]), str(path))
+
+    ws = load_workbook(str(path)).active
+    assert ws.cell(row=1, column=1).value == "x"
+    assert ws.print_area in ([], None, "")
+
+
+def test_unknown_paper_is_rejected(tmp_path) -> None:
+    plan = _fixed_plan()
+    assert plan.page is not None
+    plan.page = replace(plan.page, paper="B5")
+    with pytest.raises(ValueError, match="B5"):
+        write_xlsx(plan, str(tmp_path / "report.xlsx"))
+
+
+def test_sheet_name_is_written(tmp_path) -> None:
+    path = tmp_path / "out.xlsx"
+    write_xlsx(replace(_fixed_plan(), sheet_name="児童一覧"), str(path))
+    assert load_workbook(str(path)).active.title == "児童一覧"
+
+
+def test_plan_without_sheet_name_keeps_the_default_title(tmp_path) -> None:
+    path = tmp_path / "out.xlsx"
+    write_xlsx(_fixed_plan(), str(path))
+    assert load_workbook(str(path)).active.title == "Sheet"
+
+
+@pytest.mark.parametrize("name", ["", "a" * 32, "2026/09", "[draft]", "a:b", "a*b", "a?b", "a\\b"])
+def test_sheet_names_excel_rejects_are_refused(tmp_path, name: str) -> None:
+    with pytest.raises(ValueError, match="シート名"):
+        write_xlsx(replace(_fixed_plan(), sheet_name=name), str(tmp_path / "out.xlsx"))
+
+
+def test_openpyxl_backend_writes_via_write_xlsx(tmp_path) -> None:
+    path = tmp_path / "out.xlsx"
+    OpenpyxlBackend().write(_fixed_plan(), path)
+    assert load_workbook(str(path)).active.cell(row=1, column=1).value is not None
+
+
+def test_typed_values_and_number_formats_are_read_back(tmp_path) -> None:
+    from datetime import date, datetime
+    from decimal import Decimal
+
+    plan = PlacementPlan(
+        cells=[
+            CellPlacement(row=1, col=1, value=1234567, value_kind="number", number_format="#,##0"),
+            CellPlacement(row=1, col=2, value="12.50", value_kind="decimal"),
+            CellPlacement(
+                row=1, col=3, value="2026-09-03", value_kind="date", number_format="yyyy/mm/dd"
+            ),
+            CellPlacement(
+                row=1,
+                col=4,
+                value="2026-09-03T08:05:00",
+                value_kind="datetime",
+                number_format="yyyy-mm-dd hh:mm",
+            ),
+            CellPlacement(row=1, col=5, value=True, value_kind="bool"),
+            CellPlacement(row=1, col=6, value=None),
+        ]
+    )
+    path = tmp_path / "out.xlsx"
+    write_xlsx(plan, str(path))
+
+    ws = load_workbook(str(path)).active
+    qty, price, served_on, served_at, ok, empty = (ws.cell(row=1, column=c) for c in range(1, 7))
+    assert (qty.value, qty.number_format) == (1234567, "#,##0")
+    # Excel は数値を倍精度で持つので、Decimal は数値として読み戻る。
+    assert price.value == pytest.approx(float(Decimal("12.50")))
+    assert isinstance(price.value, float)
+    # openpyxl は日付セルを datetime として読み戻す。
+    assert served_on.value == datetime.fromisoformat("2026-09-03T00:00")
+    assert served_on.number_format == "yyyy/mm/dd"
+    assert served_at.value == datetime.fromisoformat("2026-09-03T08:05")
+    assert ok.value is True
+    assert empty.value is None
+    assert date(2026, 9, 3) == served_on.value.date()
