@@ -246,6 +246,7 @@ def resolve_page_breaks(
 
     戻り値は改ページを入れる直前のデータ行インデックスのリスト。行は途中で割らず、
     収まらない行はページ先頭へ送る。repeat_header 時はヘッダのぶんを毎ページ差し引く。
+    繰り返さない場合もヘッダは 1 ページ目(シート 1 行目)に載るので、1 ページ目だけ計上する。
     `header_height_pt` を省略すると 1 行ぶんとみなす(ヘッダが折り返す場合は
     `solve` が実際の高さを渡す。渡さないと繰り返しヘッダのぶんを過小に見積もる)。
     1 行だけでページに収まらない場合は LayoutError(仕様決定3)。
@@ -255,7 +256,8 @@ def resolve_page_breaks(
     available = printable_height - (header_pt if table.repeat_header else 0.0)
 
     breaks: list[int] = []
-    used = 0.0
+    # ヘッダは常に 1 ページ目にある。繰り返さない場合は 1 ページ目だけ使用済みとして数える。
+    used = 0.0 if table.repeat_header else header_pt
     for row_index in sorted(row_heights):
         height = row_heights[row_index]
         if height > available:

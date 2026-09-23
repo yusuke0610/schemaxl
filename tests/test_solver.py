@@ -332,8 +332,32 @@ def test_repeat_header_reduces_available_height() -> None:
 
     # ヘッダ繰り返しありでは収まらず改ページ。
     assert resolve_page_breaks(_one_col_table(repeat_header=True), row_heights, PAGE) == [1]
-    # ヘッダぶんが空くと 2 行とも収まり改ページ不要。
-    assert resolve_page_breaks(_one_col_table(repeat_header=False), row_heights, PAGE) == []
+    # 繰り返さなくても 1 ページ目にはヘッダが載るので、やはり収まらない。
+    assert resolve_page_breaks(_one_col_table(repeat_header=False), row_heights, PAGE) == [1]
+
+
+def test_header_counts_only_on_the_first_page_without_repeat_header() -> None:
+    """repeat_header=False でも 1 ページ目はヘッダのぶんを差し引き、2 ページ目以降は差し引かない。"""
+    from schemaxl.core.solver import resolve_page_breaks
+
+    tall_header = 4 * 11.0 * 1.2
+    # 1 ページ目: ヘッダ + 2 行は収まらない。2 ページ目以降: ヘッダが無いので 2 行収まる。
+    h = (PRINTABLE_HEIGHT_PT - tall_header) / 2 + 1
+    row_heights = {0: h, 1: h, 2: h, 3: h}
+    table = _one_col_table(repeat_header=False)
+
+    assert resolve_page_breaks(table, row_heights, PAGE, header_height_pt=tall_header) == [1, 3]
+
+
+def test_first_row_moves_to_page_two_when_it_cannot_fit_under_the_header() -> None:
+    """ヘッダの下に入らないが 1 ページには収まる先頭行は、ヘッダ直後で改ページして送る。"""
+    from schemaxl.core.solver import resolve_page_breaks
+
+    tall_header = 4 * 11.0 * 1.2
+    h = PRINTABLE_HEIGHT_PT - tall_header + 1
+    table = _one_col_table(repeat_header=False)
+
+    assert resolve_page_breaks(table, {0: h}, PAGE, header_height_pt=tall_header) == [0]
 
 
 def test_row_taller_than_page_raises_layout_error() -> None:
