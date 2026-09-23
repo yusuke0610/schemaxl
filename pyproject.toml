@@ -47,6 +47,11 @@ testpaths = ["tests"]
 [tool.ruff]
 src = ["src", "tests"]
 line-length = 100
+# ruff 0.16 から Markdown 内のコードブロックも整形対象に入った。README の
+# 「API スケッチ」はコメントの桁を揃えて「データ制約」と「レイアウト制約」の
+# 対比を見せる意図的な整形であり(CLAUDE.md が設計意図の一次情報と位置づけている)、
+# 実行されるコードでもない。ドキュメントはコードフォーマッタの対象から外す。
+extend-exclude = ["*.md"]
 
 [tool.mypy]
 packages = ["schemaxl"]
