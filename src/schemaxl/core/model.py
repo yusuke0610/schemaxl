@@ -94,8 +94,17 @@ class Table:
     """
 
     bind: type[Any] | None = None
-    break_inside: Literal["avoid_row", "auto"] = "avoid_row"
+    # "auto"(行の途中での改ページ)は未対応。Excel の 1 行は紙をまたげないため、
+    # 1 データ行を複数シート行へ分割する行モデルが要る(Block 階層 #16 と併せて設計する)。
+    break_inside: Literal["avoid_row"] = "avoid_row"
     repeat_header: bool = True
+
+    def __post_init__(self) -> None:
+        # 型を狭めても mypy を通さない利用者には届かない。黙って無視せず生成時に拒否する。
+        if self.break_inside != "avoid_row":
+            raise ValueError(
+                f"未対応の break_inside: {self.break_inside!r}(現在は 'avoid_row' のみ)"
+            )
 
 
 # --- 列(モデルから抽出した solver 向けの中間表現)-----------------------

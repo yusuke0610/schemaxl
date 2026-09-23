@@ -196,6 +196,13 @@ def test_row_taller_than_page_raises_layout_error() -> None:
     assert "行 0" in str(exc.value)
 
 
+def test_break_inside_auto_is_rejected_instead_of_silently_ignored() -> None:
+    # Excel の行は紙をまたげないため "auto" は未対応。指定しても無視されるのではなく、
+    # 宣言の時点で拒否する。
+    with pytest.raises(ValueError, match="break_inside"):
+        Table(break_inside="auto")  # type: ignore[arg-type]
+
+
 # --- 第5段: solve / PlacementPlan ----------------------------------------
 
 
