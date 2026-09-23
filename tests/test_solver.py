@@ -19,7 +19,7 @@ from pydantic import BaseModel
 
 from schemaxl.core.errors import LayoutError
 from schemaxl.core.model import A4, Auto, Fill, Layout, Table, Width, normalize_width
-from schemaxl.core.overflow import Shrink, Wrap
+from schemaxl.core.overflow import Shrink, Truncate, Wrap
 from schemaxl.core.units import mm
 
 # --- 決定的な計測器 -------------------------------------------------------
@@ -671,6 +671,57 @@ def test_plan_with_decimal_and_dates_is_json_serializable() -> None:
     restored = json.loads(json.dumps(dataclasses.asdict(_solve_typed())))
     cell = next(c for c in restored["cells"] if c["row"] == 2 and c["col"] == 3)
     assert (cell["value"], cell["value_kind"]) == ("2026-09-03", "date")
+
+
+# --- Truncate(切り詰め) --------------------------------------------------
+
+
+def test_truncated_cells_carry_the_shortened_text_and_a_truncated_warning() -> None:
+    from schemaxl.core.solver import solve
+
+    class Row(BaseModel):
+        name: Annotated[str, Layout(header="名", width=Auto(max=mm(10)), overflow=Truncate())]
+
+    width_pt = mm(10).to_pt()  # 28.3pt → 11pt の文字が 2 文字まで
+    plan = solve(PAGE, Table(bind=Row), [Row(name="あいうえお")], measure=char_measure)
+
+    cell = next(c for c in plan.cells if c.row == 2)
+    assert cell.value == "あ…"
+    assert cell.wrap is False
+    assert plan.row_heights[2] == pytest.approx(11.0 * 1.2)  # 1 行のまま
+    [warning] = plan.warnings
+    assert (warning.kind, warning.field_name, warning.row, warning.col) == (
+        "truncated",
+        "name",
+        2,
+        1,
+    )
+    assert warning.overage_pt == pytest.approx(5 * 11.0 - width_pt)
+
+
+def test_truncate_does_not_warn_when_the_text_fits() -> None:
+    from schemaxl.core.solver import solve
+
+    class Row(BaseModel):
+        name: Annotated[str, Layout(header="名", width=Auto(max=mm(30)), overflow=Truncate())]
+
+    plan = solve(PAGE, Table(bind=Row), [Row(name="あい")], measure=char_measure)
+    assert plan.warnings == []
+    assert next(c for c in plan.cells if c.row == 2).value == "あい"
+
+
+def test_numbers_in_a_truncate_column_are_never_truncated() -> None:
+    # 切り詰めた数値("12345…")は別の値に見える。切らずに overflow 警告にする。
+    from schemaxl.core.solver import solve
+
+    class Row(BaseModel):
+        qty: Annotated[int, Layout(header="数", width=Auto(max=mm(10)), overflow=Truncate())]
+
+    plan = solve(PAGE, Table(bind=Row), [Row(qty=123456789012)], measure=char_measure)
+    cell = next(c for c in plan.cells if c.row == 2)
+    assert (cell.value, cell.value_kind) == (123456789012, "number")
+    [warning] = plan.warnings
+    assert (warning.kind, warning.row, warning.col) == ("overflow", 2, 1)
 
 
 # --- ヘルパ ---------------------------------------------------------------

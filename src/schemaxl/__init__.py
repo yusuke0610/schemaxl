@@ -14,7 +14,7 @@ from schemaxl.core.model import (
     Report,
     Table,
 )
-from schemaxl.core.overflow import Shrink, TextMeasurer, Wrap
+from schemaxl.core.overflow import Shrink, TextMeasurer, Truncate, Wrap
 from schemaxl.core.plan import PlacementPlan
 from schemaxl.core.units import mm, pt
 
@@ -29,6 +29,7 @@ __all__ = [
     "Shrink",
     "Table",
     "TextMeasurer",
+    "Truncate",
     "Wrap",
     "mm",
     "pt",

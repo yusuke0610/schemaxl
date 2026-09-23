@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field, ValidationError
 from schemaxl import PlacementPlan
 from schemaxl.core.errors import LayoutError, SchemaxlWarning
 from schemaxl.core.model import A4, Auto, Layout, Report, Table
-from schemaxl.core.overflow import Shrink
+from schemaxl.core.overflow import Shrink, Truncate
 from schemaxl.core.units import mm
 
 
@@ -228,3 +228,42 @@ def test_render_writes_numbers_as_numbers(tmp_path) -> None:
     assert ws.cell(row=2, column=2).value == 12  # "12" ではない
     assert ws.cell(row=3, column=2).value == 1500
     assert ws.cell(row=3, column=2).number_format == "#,##0"
+
+
+# --- Truncate の切り詰めは strict でも止めない(宣言どおりの結果) ------------
+
+
+class NoteRow(BaseModel):
+    note: Annotated[str, Layout(header="備考", width=Auto(max=mm(20)), overflow=Truncate())]
+
+
+class NoteReport(Report[NoteRow]):
+    page = A4(margin=mm(15))
+    body = Table()
+
+
+def test_truncation_is_reported_but_does_not_block_a_strict_render(tmp_path) -> None:
+    path = tmp_path / "report.xlsx"
+    with pytest.warns(SchemaxlWarning, match="切り詰めた"):
+        NoteReport.render([{"note": "あ" * 30}], str(path))  # strict=True(既定)
+
+    ws = load_workbook(str(path)).active
+    assert ws.cell(row=2, column=1).value.endswith("…")
+
+
+def test_overflow_still_blocks_a_strict_render_alongside_truncation(tmp_path) -> None:
+    # 切り詰めは許しても、意図しない見切れ(Shrink の下限割れ)は従来どおり止める。
+    class MixedRow(BaseModel):
+        note: Annotated[str, Layout(header="備考", width=Auto(max=mm(20)), overflow=Truncate())]
+        label: Annotated[
+            str, Layout(header="ラベル", width=Auto(min=mm(20)), overflow=Shrink(min_pt=8))
+        ]
+
+    class MixedReport(Report[MixedRow]):
+        page = A4(margin=mm(15))
+        body = Table()
+
+    path = tmp_path / "report.xlsx"
+    with pytest.raises(LayoutError, match="収まらない"):
+        MixedReport.render([{"note": "あ" * 30, "label": "あ" * 30}], str(path))
+    assert not path.exists()

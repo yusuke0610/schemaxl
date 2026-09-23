@@ -26,7 +26,12 @@ from typing import (
     get_type_hints,
 )
 
-from schemaxl.core.errors import LayoutError, LayoutWarning, SchemaxlWarning
+from schemaxl.core.errors import (
+    NON_BLOCKING_WARNING_KINDS,
+    LayoutError,
+    LayoutWarning,
+    SchemaxlWarning,
+)
 from schemaxl.core.overflow import OverflowStrategy, TextMeasurer, default_measure, normalize
 from schemaxl.core.units import Length
 from schemaxl.core.values import CellValue, check_number_format, to_cell_value
@@ -247,15 +252,17 @@ def _report_warnings(layout_warnings: list[LayoutWarning], *, strict: bool) -> N
     solver は警告を送出せず `PlacementPlan.warnings` に積むだけなので、それを
     「落とす」のか「知らせて続行する」のかを決めるのがここ。
 
-    - strict=True:  1 件でもあれば `LayoutError`。見切れた帳票を黙って書き出さない。
+    - strict=True:  見切れ等が 1 件でもあれば `LayoutError`。見切れた帳票を黙って書き出さない。
     - strict=False: `SchemaxlWarning` として通知し、書き出しは続行する。
+
+    `Truncate` による切り詰め(`NON_BLOCKING_WARNING_KINDS`)は利用者が宣言した結果なので、
+    strict でも止めずに常に通知だけする。止めると `Truncate` が事実上使えない。
     """
-    if not layout_warnings:
-        return
-    if strict:
-        first = layout_warnings[0]
+    blocking = [w for w in layout_warnings if w.kind not in NON_BLOCKING_WARNING_KINDS]
+    if strict and blocking:
+        first = blocking[0]
         raise LayoutError(
-            f"レイアウト警告 {len(layout_warnings)} 件。最初の 1 件"
+            f"レイアウト警告 {len(blocking)} 件。最初の 1 件"
             f"(行 {first.row} / 列 {first.col}): {first.message}"
             " — 警告を許容して書き出すなら strict=False",
             overage_pt=first.overage_pt,

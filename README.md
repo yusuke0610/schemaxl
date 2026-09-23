@@ -66,6 +66,8 @@ AllergyReport.render(rows, "report.xlsx", strict=False)  # 警告を通知して
 - `strict=True`(既定) … 警告が 1 件でもあれば `LayoutError` を送出し、**ファイルを書き出さない。**
   見切れた帳票が黙って出来上がるのを防ぐ。
 - `strict=False` … `SchemaxlWarning` として通知したうえで書き出す。
+- `Truncate` による切り詰め(`kind="truncated"`)だけは、利用者が宣言した結果なので `strict=True` でも
+  止めずに `SchemaxlWarning` で通知して書き出す(情報が落ちたことは必ず知らせる)。
 
 ### 配置計画の取得と拡張点
 
@@ -129,7 +131,9 @@ class AllergyReport(Report[AllergyRow]):
 - **ヘッダ行もデータ行と同じ overflow 戦略を通る。** 列幅が頭打ちになったとき、ヘッダだけ
   1 行固定だと無警告で見切れるため。`Wrap` ならヘッダも折り返してヘッダ行の高さが伸び、
   `repeat_header` はその実高を毎ページ差し引く。
-- `overflow` … 収まらないときの戦略。`Wrap()`(折り返し)/ `Shrink(min_pt=...)`(フォント縮小、下限 pt 指定)。引数なしの戦略は `Wrap` / `Wrap()` どちらでも可(内部でインスタンスに正規化)。
+- `overflow` … 収まらないときの戦略。`Wrap()`(折り返し)/ `Shrink(min_pt=...)`(フォント縮小、下限 pt 指定)/
+  `Truncate(marker="…")`(収まる位置で切り詰めて省略記号を付す。絵文字や結合文字を途中で割らない)。
+  引数なしの戦略は `Wrap` / `Wrap()` どちらでも可(内部でインスタンスに正規化)。
 - **セル値はモデルの型のまま書き出す。** `int` / `float` / `Decimal` は数値、`date` / `datetime` は日付、
   `bool` は論理値として Excel に入る(SUM・並べ替え・フィルタが効く)。`list` は `join`(既定 `"、"`)で結合した文字列。
 - `number_format` … Excel の表示書式。`Layout(header="金額", number_format="#,##0")` のように指定する。
@@ -221,7 +225,8 @@ pip install -e ".[dev]"
 
 - [ ] 制約の静的検証(`schemaxl check`): `max_length` と列幅・overflow 戦略を突き合わせ、破綻しうる組み合わせをレンダリング前に検出
 - [ ] `Block` のネスト・複数ブロック配置(Sheet → Block → Item 階層)
-- [ ] overflow 戦略の追加: `Ellipsis`(省略記号)/ `SplitBlock`(2 ブロック展開)
+- [x] overflow 戦略の追加: `Truncate`(省略記号で切り詰め)
+- [ ] overflow 戦略の追加: `SplitBlock`(2 ブロック展開。Block 階層の後)
 - [ ] データプロファイリング(実データ / DB スキーマから制約違反を事前検出しレポート)
 - [ ] 極端ケースデータの自動生成(`max_length` ぴったり等)+ スナップショットテスト支援
 - [ ] 帳票仕様書(Markdown)の自動生成

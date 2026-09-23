@@ -16,11 +16,18 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from schemaxl.core.errors import LayoutError, LayoutWarning
+from schemaxl.core.errors import WARNING_OVERFLOW, WARNING_TRUNCATED, LayoutError, LayoutWarning
 from schemaxl.core.model import A4, Column, Table, cell_value, columns_of
 from schemaxl.core.model import Auto as AutoWidth
 from schemaxl.core.model import Fill as FillWidth
-from schemaxl.core.overflow import DEFAULT_FONT_PT, TextMeasurer, Wrap, default_measure, fit
+from schemaxl.core.overflow import (
+    DEFAULT_FONT_PT,
+    TextMeasurer,
+    Truncate,
+    Wrap,
+    default_measure,
+    fit,
+)
 from schemaxl.core.plan import CellPlacement, CellRange, PageBreak, PageSetup, PlacementPlan
 from schemaxl.core.units import mm, pt_to_excel_column_width, pt_to_excel_row_height
 from schemaxl.core.values import CellValue
@@ -298,19 +305,23 @@ def _resolve_text(
     ヘッダ行もデータ行も同じ経路を通す。ヘッダだけ戦略を適用しないと、列幅が
     頭打ちになったときにヘッダが無警告で見切れる。
 
-    `wrappable=False`(数値・日付)は `Wrap` 列でも折り返さない。Excel は数値を
-    折り返さず、収まらなければ「###」と表示するため。収まらない場合は警告を積む。
+    `wrappable=False`(数値・日付)は `Wrap` 列でも折り返さず、`Truncate` 列でも
+    切り詰めない。Excel は数値を折り返さず、収まらなければ「###」と表示するうえ、
+    切り詰めた数値は別の値に見えてしまうため。収まらない場合は警告を積む。
     """
     if column.overflow is None:
         return _ResolvedCell(text=text, font_pt=DEFAULT_FONT_PT, wrap=False)
-    if not wrappable and isinstance(column.overflow, Wrap):
+    if not wrappable and isinstance(column.overflow, (Wrap, Truncate)):
         overage_pt = measure(text, DEFAULT_FONT_PT) - width_pt
         unwrappable_warnings: tuple[LayoutWarning, ...] = ()
         if overage_pt > 0:
             unwrappable_warnings = (
                 LayoutWarning(
-                    message=(f"数値・日付は折り返せず、幅 {width_pt:.1f}pt に収まらない: {text!r}"),
-                    kind="overflow",
+                    message=(
+                        f"数値・日付は折り返し・切り詰めができず、幅 {width_pt:.1f}pt に"
+                        f"収まらない: {text!r}"
+                    ),
+                    kind=WARNING_OVERFLOW,
                     field_name=column.field_name,
                     row=sheet_row,
                     col=column.index + 1,
@@ -324,22 +335,34 @@ def _resolve_text(
 
     # fit は「収まらなかった」ことをメッセージで返すだけで座標を知らない。
     # ここで行・列・フィールド名と超過量を付けて構造化する。
-    warnings: tuple[LayoutWarning, ...] = ()
-    if result.warnings:
-        overage_pt = measure(text, result.font_pt) - width_pt
-        warnings = tuple(
+    overage_pt = measure(text, result.font_pt) - width_pt
+    warnings = tuple(
+        LayoutWarning(
+            message=message,
+            kind=WARNING_OVERFLOW,
+            field_name=column.field_name,
+            row=sheet_row,
+            col=column.index + 1,
+            overage_pt=overage_pt if overage_pt > 0 else None,
+        )
+        for message in result.warnings
+    )
+    # 切り詰めは宣言どおりの結果だが、情報が失われるので黙らせない。
+    shown = text
+    if result.truncated:
+        shown = result.lines[0]
+        warnings += (
             LayoutWarning(
-                message=message,
-                kind="overflow",
+                message=f"幅 {width_pt:.1f}pt に収まらず切り詰めた: {text!r} → {shown!r}",
+                kind=WARNING_TRUNCATED,
                 field_name=column.field_name,
                 row=sheet_row,
                 col=column.index + 1,
                 overage_pt=overage_pt if overage_pt > 0 else None,
-            )
-            for message in result.warnings
+            ),
         )
     return _ResolvedCell(
-        text=text,
+        text=shown,
         font_pt=result.font_pt,
         wrap=isinstance(column.overflow, Wrap),
         line_count=result.line_count,
@@ -422,7 +445,13 @@ def solve(
                     row=sheet_row,
                     col=column.index + 1,
                     # 型を保った値(表示文字列ではない)と、その解読・表示に要る情報。
-                    value=value.value,
+                    # 文字列だけは overflow 戦略で変わりうる(Truncate の切り詰め)ので、
+                    # 確定した表示文字列を書く。
+                    value=(
+                        resolved.text
+                        if value.kind == "text" and value.value is not None
+                        else value.value
+                    ),
                     value_kind=value.kind,
                     number_format=value.number_format,
                     font_pt=resolved.font_pt,
