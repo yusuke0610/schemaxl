@@ -21,6 +21,13 @@ from dataclasses import dataclass
 #              止めず、常に SchemaxlWarning で通知する(黙って情報を落とさない)。
 WARNING_OVERFLOW = "overflow"
 WARNING_TRUNCATED = "truncated"
+# 以下は静的検証(`schemaxl check`)だけが出す種別。
+# - layout_error: 最悪ケースで solver が LayoutError を送出する(列幅・行高がページに収まらない)。
+# - unbounded:    上限(max_length)が無く、最悪ケースを作れないので検証できない列。
+# - no_layout:    Layout が付いておらず列にならないフィールド(意図的か確認したい)。
+WARNING_LAYOUT_ERROR = "layout_error"
+WARNING_UNBOUNDED = "unbounded"
+WARNING_NO_LAYOUT = "no_layout"
 
 # strict でも LayoutError へ昇格させない種別。利用者が明示的に選んだ結果だけを入れる。
 NON_BLOCKING_WARNING_KINDS = frozenset({WARNING_TRUNCATED})

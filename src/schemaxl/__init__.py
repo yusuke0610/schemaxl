@@ -6,6 +6,7 @@
 """
 
 from schemaxl.backends.base import Backend
+from schemaxl.core.check import check
 from schemaxl.core.model import (
     A4,
     Auto,
@@ -31,6 +32,7 @@ __all__ = [
     "TextMeasurer",
     "Truncate",
     "Wrap",
+    "check",
     "mm",
     "pt",
 ]

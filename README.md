@@ -93,6 +93,35 @@ AllergyReport.render(
 - `sheet_name` … solver が plan に載せ、backend は写すだけ。Excel の制約
   (31 文字以内、`[]:*?/\` を含まない)に反すると openpyxl バックエンドが `ValueError`。
 
+### レンダリング前の静的検証(`schemaxl check`)
+
+データを一切見ずに、行モデルの宣言だけから「紙に収まらない」構成を検出する。
+`max_length` いっぱいまで最も幅の広い文字で埋めた **最悪ケースの 1 行** を実物の solver に
+通すので、検証とレンダリングの判定は食い違わない。
+
+```bash
+schemaxl check myapp.reports:AllergyReport            # error があれば終了コード 1
+schemaxl check --strict myapp.reports:AllergyReport   # warning も失敗扱い
+schemaxl check --format json myapp.reports:AllergyReport
+```
+
+```python
+from schemaxl import check
+findings = check(AllergyReport)                       # list[LayoutWarning](実行時の警告と同じ型)
+```
+
+| kind | 重さ | 内容 |
+| --- | --- | --- |
+| `layout_error` | error | Auto 列の下限合計が印字可能幅を超える、Fill 列の下限を賄えない、折り返した行がページに収まらない |
+| `overflow` | error | `Shrink` の `min_pt` まで縮めても `max_length` の文字列が収まらない等 |
+| `truncated` | warning | 最悪ケースで `Truncate` の切り詰めが起きる |
+| `unbounded` | warning | `max_length` の無い `str` 列・`list` 列(上限が無く原理的に検証できない) |
+| `no_layout` | warning | `Layout` の付いていないフィールド(列にならない) |
+
+error / warning の線引きは `render(strict=True)` が止めるもの・止めないものと同じ。
+終了コードは 0(問題なし)/ 1(error、`--strict` なら warning も)/ 2(対象を import できない等)。
+数値・日付の列は最悪ケースを作らない(桁数の上限を宣言する手段がまだ無い)。
+
 ## API スケッチ
 
 > 以下は設計の完成イメージです。**まだ動作しません**(骨格のみ)。
@@ -163,6 +192,7 @@ Pydantic モデル(単一の真実)
 | 単位 | `core/units.py` | `mm`, `pt` などの単位型 |
 | overflow 戦略 | `core/overflow.py` | `Wrap`, `Shrink` 等の収まらないときの戦略 |
 | 制約解決 | `core/solver.py` | 列幅・行高・改ページの解決(**純粋関数**) |
+| 静的検証 | `core/check.py` | 最悪ケースの行を solver に通す `check`(**純粋関数**)。CLI は `cli.py` |
 | セル値 | `core/values.py` | 値の型の保持と、書式適用後の表示文字列(幅計測の入力) |
 | 配置計画 | `core/plan.py` | 配置計画の中間表現 `PlacementPlan` |
 | バックエンド | `backends/base.py` | `Backend` プロトコル(出力ライブラリ非依存) |
@@ -223,7 +253,7 @@ pip install -e ".[dev]"
 
 ### 将来構想
 
-- [ ] 制約の静的検証(`schemaxl check`): `max_length` と列幅・overflow 戦略を突き合わせ、破綻しうる組み合わせをレンダリング前に検出
+- [x] 制約の静的検証(`schemaxl check`): `max_length` と列幅・overflow 戦略を突き合わせ、破綻しうる組み合わせをレンダリング前に検出
 - [ ] `Block` のネスト・複数ブロック配置(Sheet → Block → Item 階層)
 - [x] overflow 戦略の追加: `Truncate`(省略記号で切り詰め)
 - [ ] overflow 戦略の追加: `SplitBlock`(2 ブロック展開。Block 階層の後)
