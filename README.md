@@ -52,6 +52,23 @@ AllergyReport.render(rows, "report.xlsx")
 いずれの場合も、渡された行は内部で `AllergyRow` に変換され、Pydantic の
 データ制約(`max_length` 等)で検証されてからレンダリングされる。
 
+### 見切れたときの挙動(`strict`)
+
+`Shrink(min_pt=...)` の下限まで縮めても収まらない、といったレイアウト警告は
+solver が `PlacementPlan.warnings` に構造化して積む(行・列・フィールド名・超過量)。
+solver 自身は送出しない。それをどう扱うかは `render` が決める。
+
+```python
+AllergyReport.render(rows, "report.xlsx")                # strict=True(既定)
+AllergyReport.render(rows, "report.xlsx", strict=False)  # 警告を通知して書き出す
+```
+
+- `strict=True`(既定) … 警告が 1 件でもあれば `LayoutError` を送出し、**ファイルを書き出さない。**
+  見切れた帳票が黙って出来上がるのを防ぐ。
+- `strict=False` … `SchemaxlWarning` として通知したうえで書き出す。
+- `Truncate` による切り詰め(`kind="truncated"`)だけは、利用者が宣言した結果なので `strict=True` でも
+  止めずに `SchemaxlWarning` で通知して書き出す(情報が落ちたことは必ず知らせる)。
+
 ## API スケッチ
 
 > 以下は設計の完成イメージです。**まだ動作しません**(骨格のみ)。
@@ -79,8 +96,20 @@ class AllergyReport(Report[AllergyRow]):
 
 - `Field(...)` は **データ制約**(Pydantic 本来の役割)。
 - `Layout(...)` は **レイアウト制約**。`Annotated` によって型の隣に同居させ、単一の真実に統合する。
-- `width` … `Auto(min=...)`(内容に応じ自動、下限指定可)/ `Fill`(残り幅を埋める)。
-- `overflow` … 収まらないときの戦略。`Wrap()`(折り返し)/ `Shrink(min_pt=...)`(フォント縮小、下限 pt 指定)。引数なしの戦略は `Wrap` / `Wrap()` どちらでも可(内部でインスタンスに正規化)。
+- `width` … `Auto(min=..., max=...)`(内容に応じ自動、下限・上限を指定可)/
+  `Fill(min=...)`(残り幅を埋める、下限指定可)。引数なしなら `Fill` / `Fill()` どちらでも可
+  (内部でインスタンスに正規化)。残り幅が下限に満たない構成は `LayoutError`
+  (幅 0 の列を黙って作らない)。
+- **Auto 列は overflow を宣言したときだけ幅が頭打ちになる。** 上限は `max`、未指定なら `min`、
+  それも無ければ印字可能幅を列数で割った値。上限が無いと Auto 列は内容が 1 行で収まる幅を
+  常に確保してしまい、`Wrap` / `Shrink` の出番が来ない。overflow を宣言していない列は
+  切り詰める術がないので、`max` を書いても切り詰めず、従来どおり内容幅を確保する。
+- **ヘッダ行もデータ行と同じ overflow 戦略を通る。** 列幅が頭打ちになったとき、ヘッダだけ
+  1 行固定だと無警告で見切れるため。`Wrap` ならヘッダも折り返してヘッダ行の高さが伸び、
+  `repeat_header` はその実高を毎ページ差し引く。
+- `overflow` … 収まらないときの戦略。`Wrap()`(折り返し)/ `Shrink(min_pt=...)`(フォント縮小、下限 pt 指定)/
+  `Truncate(marker="…")`(収まる位置で切り詰めて省略記号を付す。絵文字や結合文字を途中で割らない)。
+  引数なしの戦略は `Wrap` / `Wrap()` どちらでも可(内部でインスタンスに正規化)。
 - `break_inside="avoid_row"` … 1 行の途中でページを割らない。
 - `repeat_header=True` … ヘッダ行を各ページの先頭で繰り返す。
 - **行モデルは `Report[AllergyRow]` のジェネリクスから推論される**ため、`Table(bind=...)` は省略できる(同じ情報を 2 回書かない)。明示したい場合は `Table(bind=AllergyRow)` も可。
@@ -162,7 +191,8 @@ pip install -e ".[dev]"
 
 - [ ] 制約の静的検証(`schemaxl check`): `max_length` と列幅・overflow 戦略を突き合わせ、破綻しうる組み合わせをレンダリング前に検出
 - [ ] `Block` のネスト・複数ブロック配置(Sheet → Block → Item 階層)
-- [ ] overflow 戦略の追加: `Ellipsis`(省略記号)/ `SplitBlock`(2 ブロック展開)
+- [x] overflow 戦略の追加: `Truncate`(省略記号で切り詰め)
+- [ ] overflow 戦略の追加: `SplitBlock`(2 ブロック展開。Block 階層の後)
 - [ ] データプロファイリング(実データ / DB スキーマから制約違反を事前検出しレポート)
 - [ ] 極端ケースデータの自動生成(`max_length` ぴったり等)+ スナップショットテスト支援
 - [ ] 帳票仕様書(Markdown)の自動生成
