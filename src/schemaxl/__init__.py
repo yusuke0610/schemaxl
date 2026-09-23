@@ -2,7 +2,8 @@
 
 公開 API はこのモジュールから re-export する。詳細な設計は README.md を参照。
 
-現時点では骨格 (skeleton) のみ。各シンボルの実体は未実装。
+`__version__` はパッケージバージョンの単一の真実(pyproject.toml は hatch の
+dynamic version でここを読む)。
 """
 
 from schemaxl.core.model import (

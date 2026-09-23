@@ -1,7 +1,7 @@
-"""README 掲載の API スケッチを動かす想定の example(骨格)。
+"""README 掲載の API スケッチをそのまま動かす example。
 
-現時点では schemaxl のロジックが未実装のため、`AllergyReport.render(...)` は
-NotImplementedError を送出する。API の形を示すことが目的。
+`python examples/allergy_report.py` を実行すると、カレントディレクトリに
+`report.xlsx`(A4 縦・ヘッダ行を各ページで繰り返す帳票)を書き出す。
 """
 
 from __future__ import annotations
