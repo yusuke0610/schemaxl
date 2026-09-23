@@ -12,7 +12,7 @@ from dataclasses import replace
 import pytest
 from openpyxl import load_workbook
 
-from schemaxl.backends.openpyxl_backend import write_xlsx
+from schemaxl.backends.openpyxl_backend import OpenpyxlBackend, write_xlsx
 from schemaxl.core.plan import CellPlacement, CellRange, PageBreak, PageSetup, PlacementPlan
 from schemaxl.core.units import mm
 
@@ -154,3 +154,27 @@ def test_unknown_paper_is_rejected(tmp_path) -> None:
     plan.page = replace(plan.page, paper="B5")
     with pytest.raises(ValueError, match="B5"):
         write_xlsx(plan, str(tmp_path / "report.xlsx"))
+
+
+def test_sheet_name_is_written(tmp_path) -> None:
+    path = tmp_path / "out.xlsx"
+    write_xlsx(replace(_fixed_plan(), sheet_name="児童一覧"), str(path))
+    assert load_workbook(str(path)).active.title == "児童一覧"
+
+
+def test_plan_without_sheet_name_keeps_the_default_title(tmp_path) -> None:
+    path = tmp_path / "out.xlsx"
+    write_xlsx(_fixed_plan(), str(path))
+    assert load_workbook(str(path)).active.title == "Sheet"
+
+
+@pytest.mark.parametrize("name", ["", "a" * 32, "2026/09", "[draft]", "a:b", "a*b", "a?b", "a\\b"])
+def test_sheet_names_excel_rejects_are_refused(tmp_path, name: str) -> None:
+    with pytest.raises(ValueError, match="シート名"):
+        write_xlsx(replace(_fixed_plan(), sheet_name=name), str(tmp_path / "out.xlsx"))
+
+
+def test_openpyxl_backend_writes_via_write_xlsx(tmp_path) -> None:
+    path = tmp_path / "out.xlsx"
+    OpenpyxlBackend().write(_fixed_plan(), path)
+    assert load_workbook(str(path)).active.cell(row=1, column=1).value is not None

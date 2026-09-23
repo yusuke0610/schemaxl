@@ -90,3 +90,5 @@ class PlacementPlan:
     print_area: CellRange | None = None
     # 見切れ等の警告。solver は積むだけで送出しない。扱いは render の strict が決める。
     warnings: list[LayoutWarning] = field(default_factory=list)
+    # シート名。None なら backend の既定に任せる。
+    sheet_name: str | None = None

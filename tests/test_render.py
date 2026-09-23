@@ -13,6 +13,7 @@ import pytest
 from openpyxl import load_workbook
 from pydantic import BaseModel, Field, ValidationError
 
+from schemaxl import PlacementPlan
 from schemaxl.core.errors import LayoutError, SchemaxlWarning
 from schemaxl.core.model import A4, Auto, Layout, Report, Table
 from schemaxl.core.overflow import Shrink
@@ -130,4 +131,77 @@ def test_render_does_not_warn_when_everything_fits(tmp_path) -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("error", SchemaxlWarning)
         AllergyReport.render([{"child_name": "山田", "allergens": ["卵"]}], str(path))
+    assert path.exists()
+
+
+# --- 拡張点(plan / measure / backend / sheet_name) -------------------------
+
+
+class RecordingBackend:
+    """受け取った plan と path を記録するだけの Backend。ファイルは書かない。"""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[PlacementPlan, object]] = []
+
+    def write(self, plan: PlacementPlan, path: object) -> None:
+        self.calls.append((plan, path))
+
+
+def test_plan_returns_the_placement_plan_without_writing() -> None:
+    plan = AllergyReport.plan([{"child_name": "山田", "allergens": ["卵", "乳"]}])
+    assert isinstance(plan, PlacementPlan)
+    values = {(c.row, c.col): c.value for c in plan.cells}
+    assert values[(2, 1)] == "山田"
+    assert values[(2, 2)] == "卵、乳"
+
+
+def test_plan_keeps_warnings_instead_of_raising() -> None:
+    # strict の判定は render の責務。plan は警告を載せて返すだけ。
+    plan = TightReport.plan(CLIPPED)
+    assert [w.kind for w in plan.warnings] == ["overflow"]
+
+
+def test_render_hands_the_plan_to_the_given_backend(tmp_path) -> None:
+    backend = RecordingBackend()
+    path = tmp_path / "report.xlsx"
+    AllergyReport.render([{"child_name": "山田", "allergens": []}], path, backend=backend)
+
+    assert len(backend.calls) == 1
+    plan, received_path = backend.calls[0]
+    assert received_path == path
+    assert plan == AllergyReport.plan([{"child_name": "山田", "allergens": []}])
+    # 既定の openpyxl バックエンドは使われていない。
+    assert not path.exists()
+
+
+def test_strict_render_does_not_call_the_backend_on_warnings(tmp_path) -> None:
+    backend = RecordingBackend()
+    with pytest.raises(LayoutError):
+        TightReport.render(CLIPPED, tmp_path / "report.xlsx", backend=backend)
+    assert backend.calls == []
+
+
+def test_injected_measure_drives_column_widths() -> None:
+    rows = [{"child_name": "山田", "allergens": ["卵"]}]
+
+    def wide(text: str, font_pt: float) -> float:
+        return len(text) * font_pt * 3  # 既定の計測より 3 倍以上広く見積もる
+
+    default_plan = AllergyReport.plan(rows)
+    wide_plan = AllergyReport.plan(rows, measure=wide)
+    assert wide_plan.column_widths[1] > default_plan.column_widths[1]
+
+
+def test_sheet_name_is_carried_by_the_plan_and_written(tmp_path) -> None:
+    rows = [{"child_name": "山田", "allergens": []}]
+    assert AllergyReport.plan(rows, sheet_name="3年生").sheet_name == "3年生"
+
+    path = tmp_path / "report.xlsx"
+    AllergyReport.render(rows, path, sheet_name="3年生")
+    assert load_workbook(str(path)).active.title == "3年生"
+
+
+def test_render_accepts_pathlike(tmp_path) -> None:
+    path = tmp_path / "report.xlsx"  # pathlib.Path のまま渡す
+    AllergyReport.render([{"child_name": "山田", "allergens": []}], path)
     assert path.exists()

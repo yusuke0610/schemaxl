@@ -67,6 +67,30 @@ AllergyReport.render(rows, "report.xlsx", strict=False)  # 警告を通知して
   見切れた帳票が黙って出来上がるのを防ぐ。
 - `strict=False` … `SchemaxlWarning` として通知したうえで書き出す。
 
+### 配置計画の取得と拡張点
+
+`render` は「`plan` で配置計画を作り、backend へ渡す」だけの薄い配線になっている。
+中間表現の `PlacementPlan` は `plan` で直接取り出せる(書き出しはしない、警告も送出しない)。
+
+```python
+plan = AllergyReport.plan(rows)                       # PlacementPlan(純データ)
+plan.warnings                                         # 見切れ等の警告を検査できる
+
+AllergyReport.render(
+    rows,
+    Path("out/report.xlsx"),                          # str / os.PathLike
+    measure=my_measure,                               # 文字幅計測器 (text, font_pt) -> pt
+    backend=MyBackend(),                              # Backend プロトコル(write(plan, path))
+    sheet_name="3年生",                                # plan に載り、backend が写す
+)
+```
+
+- `measure` … 列幅・折り返し・縮小の判定に使う文字幅計測器。未指定なら東アジア文字幅による近似。
+- `backend` … `write(plan, path) -> None` を持つ任意のオブジェクト(`schemaxl.Backend`)。
+  未指定なら openpyxl で xlsx を書く(`schemaxl.backends.openpyxl_backend.OpenpyxlBackend`)。
+- `sheet_name` … solver が plan に載せ、backend は写すだけ。Excel の制約
+  (31 文字以内、`[]:*?/\` を含まない)に反すると openpyxl バックエンドが `ValueError`。
+
 ## API スケッチ
 
 > 以下は設計の完成イメージです。**まだ動作しません**(骨格のみ)。
@@ -128,6 +152,7 @@ Pydantic モデル(単一の真実)
 | overflow 戦略 | `core/overflow.py` | `Wrap`, `Shrink` 等の収まらないときの戦略 |
 | 制約解決 | `core/solver.py` | 列幅・行高・改ページの解決(**純粋関数**) |
 | 配置計画 | `core/plan.py` | 配置計画の中間表現 `PlacementPlan` |
+| バックエンド | `backends/base.py` | `Backend` プロトコル(出力ライブラリ非依存) |
 | バックエンド | `backends/openpyxl_backend.py` | `PlacementPlan` → xlsx 書き出し |
 
 この分離により、ソルバ層はファイル I/O なしで単体テストでき(`tests/test_solver.py`)、バックエンドは差し替え可能になります。

@@ -5,6 +5,7 @@
 現時点では骨格 (skeleton) のみ。各シンボルの実体は未実装。
 """
 
+from schemaxl.backends.base import Backend
 from schemaxl.core.model import (
     A4,
     Auto,
@@ -13,17 +14,21 @@ from schemaxl.core.model import (
     Report,
     Table,
 )
-from schemaxl.core.overflow import Shrink, Wrap
+from schemaxl.core.overflow import Shrink, TextMeasurer, Wrap
+from schemaxl.core.plan import PlacementPlan
 from schemaxl.core.units import mm, pt
 
 __all__ = [
     "A4",
     "Auto",
+    "Backend",
     "Fill",
     "Layout",
+    "PlacementPlan",
     "Report",
     "Shrink",
     "Table",
+    "TextMeasurer",
     "Wrap",
     "mm",
     "pt",

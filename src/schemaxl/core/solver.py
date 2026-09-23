@@ -340,11 +340,13 @@ def solve(
     rows: list[Any],
     *,
     measure: TextMeasurer = default_measure,
+    sheet_name: str | None = None,
 ) -> PlacementPlan:
     """制約解決のエントリポイント。PlacementPlan を返す純粋関数。
 
     列幅・行高・改ページを解決し、シート座標(1 始まり。1 行目ヘッダ、2 行目以降データ)
     へ写して PlacementPlan を組み立てる。幅は Excel 列幅単位、高さは pt へ変換して載せる。
+    `sheet_name` はそのまま plan に載せる(backend が自分で決めないように)。
     """
     columns = _columns(table)
     column_widths_pt = resolve_column_widths(table, rows, page, measure=measure)
@@ -366,6 +368,7 @@ def solve(
     plan = PlacementPlan(
         header_rows=1 if table.repeat_header else 0,
         page=_page_setup(page),
+        sheet_name=sheet_name,
     )
 
     # ヘッダ行。
