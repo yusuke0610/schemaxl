@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "schemaxl"
-version = "0.1.0.dev0"
+dynamic = ["version"]
 description = "Pydantic モデルを単一の真実として Excel 帳票を宣言的に生成するライブラリ"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -34,8 +34,13 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/wadayuusuke/schemaxl"
-Repository = "https://github.com/wadayuusuke/schemaxl"
+Homepage = "https://github.com/yusuke0610/schemaxl"
+Repository = "https://github.com/yusuke0610/schemaxl"
+Issues = "https://github.com/yusuke0610/schemaxl/issues"
+
+# バージョンは src/schemaxl/__init__.py の __version__ を単一の真実とする。
+[tool.hatch.version]
+path = "src/schemaxl/__init__.py"
 
 # src レイアウトを採用。配布パッケージは src/schemaxl 配下。
 [tool.hatch.build.targets.wheel]

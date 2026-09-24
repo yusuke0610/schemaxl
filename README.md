@@ -4,7 +4,7 @@
 
 **Pydantic モデルを単一の真実(Single Source of Truth)として、Excel 帳票を宣言的に生成する Python ライブラリ。**
 
-> ⚠️ **ステータス: 骨格のみ (skeleton).** 本リポジトリは現時点でディレクトリ構成と API スケッチのみを提供します。制約解決・書き出しロジックは未実装です。
+> **ステータス: MVP (v0.1) 実装済み・pre-alpha.** 単一テーブルの帳票を、列幅・行高・改ページを解決したうえで xlsx へ書き出せます(スコープは [Roadmap](#roadmap) を参照)。API は今後変わる可能性があります。
 
 ---
 
@@ -69,7 +69,7 @@ AllergyReport.render(rows, "report.xlsx", strict=False)  # 警告を通知して
 
 ## API スケッチ
 
-> 以下は設計の完成イメージです。**まだ動作しません**(骨格のみ)。
+> 以下は [`examples/allergy_report.py`](examples/allergy_report.py) としてそのまま動作します(`python examples/allergy_report.py` で `report.xlsx` を書き出す)。
 
 ```python
 from typing import Annotated
@@ -108,6 +108,7 @@ class AllergyReport(Report[AllergyRow]):
 - `overflow` … 収まらないときの戦略。`Wrap()`(折り返し)/ `Shrink(min_pt=...)`(フォント縮小、下限 pt 指定)。引数なしの戦略は `Wrap` / `Wrap()` どちらでも可(内部でインスタンスに正規化)。
 - `break_inside="avoid_row"` … 1 行の途中でページを割らない。
 - `repeat_header=True` … ヘッダ行を各ページの先頭で繰り返す。
+- 長さは `mm(...)` / `pt(...)` で指定する(内部基準単位は pt)。
 - **行モデルは `Report[AllergyRow]` のジェネリクスから推論される**ため、`Table(bind=...)` は省略できる(同じ情報を 2 回書かない)。明示したい場合は `Table(bind=AllergyRow)` も可。
 
 ## アーキテクチャ
@@ -142,10 +143,12 @@ schemaxl/
 ├── .gitignore
 ├── src/
 │   └── schemaxl/
-│       ├── __init__.py             # 公開 API を re-export (Report, Table, Layout, A4, Auto, Fill, Wrap, Shrink, mm)
+│       ├── __init__.py             # 公開 API を re-export (Report, Table, Layout, A4, Auto, Fill, Wrap, Shrink, mm, pt)
+│       ├── py.typed                # 型情報を同梱する印(PEP 561)
 │       ├── core/
 │       │   ├── __init__.py
-│       │   ├── model.py            # Layout メタデータ、Report / Table 定義
+│       │   ├── model.py            # Layout メタデータ、Report / Table 定義、render
+│       │   ├── errors.py           # LayoutError 等の例外
 │       │   ├── units.py            # mm, pt などの単位型
 │       │   ├── overflow.py         # Wrap, Shrink 等の overflow 戦略
 │       │   ├── solver.py           # 制約解決(列幅・行高・改ページ)※純粋関数群
@@ -155,10 +158,13 @@ schemaxl/
 │           └── openpyxl_backend.py # PlacementPlan → xlsx 書き出し
 ├── tests/
 │   ├── __init__.py
-│   ├── test_solver.py              # 制約解決層のテスト置き場(空の骨格)
-│   └── test_overflow.py
+│   ├── test_units.py               # 単位変換
+│   ├── test_overflow.py            # overflow 戦略
+│   ├── test_solver.py              # 制約解決(I/O なし)
+│   ├── test_openpyxl_backend.py    # xlsx の書き出しと読み戻し
+│   └── test_render.py              # Report.render の E2E
 └── examples/
-    └── allergy_report.py           # README のスケッチを動かす想定の example(骨格)
+    └── allergy_report.py           # README の API スケッチをそのまま動かす example
 ```
 
 ## インストール(将来)
@@ -185,13 +191,15 @@ pip install -e ".[dev]"
 
 ### 将来構想
 
-- [ ] 制約の静的検証(`schemaxl check`): `max_length` と列幅・overflow 戦略を突き合わせ、破綻しうる組み合わせをレンダリング前に検出
-- [ ] `Block` のネスト・複数ブロック配置(Sheet → Block → Item 階層)
-- [ ] overflow 戦略の追加: `Ellipsis`(省略記号)/ `SplitBlock`(2 ブロック展開)
-- [ ] データプロファイリング(実データ / DB スキーマから制約違反を事前検出しレポート)
-- [ ] 極端ケースデータの自動生成(`max_length` ぴったり等)+ スナップショットテスト支援
-- [ ] 帳票仕様書(Markdown)の自動生成
-- [ ] バックエンドの追加(LibreOffice / PDF 等)
+- [ ] 制約の静的検証(`schemaxl check`): `max_length` と列幅・overflow 戦略を突き合わせ、破綻しうる組み合わせをレンダリング前に検出(#14)
+- [ ] `Block` のネスト・複数ブロック配置(Sheet → Block → Item 階層)(#16)
+- [ ] overflow 戦略の追加: `Ellipsis`(省略記号)/ `SplitBlock`(2 ブロック展開)(#15)
+- [ ] データプロファイリング(実データ / DB スキーマから制約違反を事前検出しレポート)(#18)
+- [ ] 極端ケースデータの自動生成(`max_length` ぴったり等)+ スナップショットテスト支援(#18)
+- [ ] 帳票仕様書(Markdown)の自動生成(#19)
+- [ ] バックエンドの追加(LibreOffice / PDF 等)(#17)
+
+その他の改善・不具合は [Issues](https://github.com/yusuke0610/schemaxl/issues) を参照。
 
 ## ライセンス
 
