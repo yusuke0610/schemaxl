@@ -10,6 +10,7 @@ solver が openpyxl バックエンドへ渡す際は、さらに「Excel の列
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 # 1 inch = 25.4 mm = 72 pt。この 2 つの定義から他の係数を導く。
@@ -27,14 +28,22 @@ PT_PER_COLUMN_WIDTH_UNIT = _PX_PER_COLUMN_WIDTH_UNIT * PT_PER_INCH / _DEVICE_DPI
 
 _UNIT_TO_PT = {"mm": PT_PER_MM, "pt": 1.0}
 
+# 等価・ハッシュ・順序比較の基準にする pt の丸め桁数。
+# mm(25.4).to_pt() は 72.00000000000001 になりうるため、厳密比較では物理的に同じ長さが
+# 等しくならない。math.isclose では「等しいものは同じハッシュ」を満たせないので、
+# pt を量子化した値を比較キーにする。1e-6pt ≒ 0.35nm で、帳票の精度としては十分に細かい。
+_PT_COMPARE_DIGITS = 6
 
-@dataclass(frozen=True)
+
+@dataclass(frozen=True, eq=False)
 class Length:
     """長さを表す値オブジェクト。内部基準単位は pt。
 
     負の長さは存在しないため生成時に拒否する(mm(0) / pt(0) は有効)。
-    比較・加算は物理的な長さ(pt 換算)で行うため、単位が違っても意味のある
-    大小比較ができる(改ページ計算での高さ累積に用いる)。
+    等価・ハッシュ・大小比較はすべて物理的な長さ(pt 換算)で行うため、単位が違っても
+    `mm(25.4) == pt(72)` となり、順序比較とも矛盾しない(改ページ計算での高さ累積に用いる)。
+    比較キーは pt を `_PT_COMPARE_DIGITS` 桁に丸めた値なので、丸めの境界をまたぐ
+    極めて近い 2 値は等しくならないことがある。
     """
 
     value: float
@@ -43,12 +52,27 @@ class Length:
     def __post_init__(self) -> None:
         if self.unit not in _UNIT_TO_PT:
             raise ValueError(f"未知の単位: {self.unit!r}(mm または pt)")
+        # NaN は自分自身とも等しくならず、set / dict のキーとして壊れる。無限大も長さではない。
+        if not math.isfinite(self.value):
+            raise ValueError(f"長さは有限の値で指定する: {self.value}{self.unit}")
         if self.value < 0:
             raise ValueError(f"長さに負値は指定できない: {self.value}{self.unit}")
 
     def to_pt(self) -> float:
         """ポイントへ変換する。"""
         return self.value * _UNIT_TO_PT[self.unit]
+
+    def _key(self) -> float:
+        """等価・ハッシュ・順序比較に共通の比較キー(量子化した pt)。"""
+        return round(self.to_pt(), _PT_COMPARE_DIGITS)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Length):
+            return NotImplemented
+        return self._key() == other._key()
+
+    def __hash__(self) -> int:
+        return hash(self._key())
 
     def __add__(self, other: Length) -> Length:
         if not isinstance(other, Length):
@@ -61,22 +85,22 @@ class Length:
     def __lt__(self, other: Length) -> bool:
         if not isinstance(other, Length):
             return NotImplemented
-        return self.to_pt() < other.to_pt()
+        return self._key() < other._key()
 
     def __le__(self, other: Length) -> bool:
         if not isinstance(other, Length):
             return NotImplemented
-        return self.to_pt() <= other.to_pt()
+        return self._key() <= other._key()
 
     def __gt__(self, other: Length) -> bool:
         if not isinstance(other, Length):
             return NotImplemented
-        return self.to_pt() > other.to_pt()
+        return self._key() > other._key()
 
     def __ge__(self, other: Length) -> bool:
         if not isinstance(other, Length):
             return NotImplemented
-        return self.to_pt() >= other.to_pt()
+        return self._key() >= other._key()
 
 
 def mm(value: float) -> Length:

@@ -250,7 +250,12 @@ def resolve_page_breaks(
     `header_height_pt` を省略すると 1 行ぶんとみなす(ヘッダが折り返す場合は
     `solve` が実際の高さを渡す。渡さないと繰り返しヘッダのぶんを過小に見積もる)。
     1 行だけでページに収まらない場合は LayoutError(仕様決定3)。
+
+    `break_inside` は現在 "avoid_row" しか取れない。`Table` は生成時に他の値を拒否するが、
+    可変なので生成後に書き換えられうる。黙って avoid_row として扱わないよう、ここでも拒否する。
     """
+    if table.break_inside != "avoid_row":
+        raise ValueError(f"未対応の break_inside: {table.break_inside!r}(現在は 'avoid_row' のみ)")
     _, printable_height = _printable_size_pt(page)
     header_pt = _header_height_pt() if header_height_pt is None else header_height_pt
     available = printable_height - (header_pt if table.repeat_header else 0.0)

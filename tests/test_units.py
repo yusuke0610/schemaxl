@@ -101,8 +101,41 @@ def test_length_is_hashable_and_frozen() -> None:
         mm(10).value = 5  # type: ignore[misc]
 
 
+def test_physically_equal_lengths_are_equal_across_units() -> None:
+    # 25.4mm = 1inch = 72pt。to_pt() は浮動小数誤差を含みうるが、等価は物理量で判定する。
+    assert mm(25.4) == pt(72)
+    assert hash(mm(25.4)) == hash(pt(72))
+    assert len({mm(25.4), pt(72)}) == 1
+
+
+def test_equality_is_consistent_with_ordering() -> None:
+    # 等しい 2 値はどちら向きにも「より小さい」にならない。
+    a, b = mm(25.4), pt(72)
+    assert not a < b and not b < a
+    assert a <= b <= a
+    assert a >= b >= a
+
+
+def test_mixed_unit_sort_and_max_use_physical_size() -> None:
+    lengths = [mm(10), pt(20), mm(5), pt(72)]
+    assert sorted(lengths) == [mm(5), pt(20), mm(10), pt(72)]
+    assert max(lengths) == mm(25.4)
+
+
+def test_length_is_not_equal_to_non_length() -> None:
+    assert mm(10) != 10
+    assert pt(72) != "72pt"
+
+
 def test_addition_of_many_lengths_accumulates() -> None:
     # 改ページ計算では複数の高さを足し込む。
     total = sum((pt(10), pt(20), pt(5)), pt(0))
     assert total.to_pt() == pytest.approx(35.0)
     assert not math.isnan(total.to_pt())
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf")])
+def test_non_finite_lengths_are_rejected(value: float) -> None:
+    # NaN は自分自身と等しくならず set / dict のキーとして壊れる。無限大も長さではない。
+    with pytest.raises(ValueError, match="有限"):
+        mm(value)
