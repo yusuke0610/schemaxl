@@ -147,9 +147,11 @@ def resolve_page_breaks(table: Table, row_heights: dict[int, float], page: A4) -
     収まらない行はページ先頭へ送る。repeat_header 時はヘッダ 1 行ぶんを毎ページ差し引く。
     1 行だけでページに収まらない場合は LayoutError(仕様決定3)。
 
-    `break_inside` は現在 "avoid_row" しか取れない(`Table` が生成時に他の値を拒否する)
-    ため、ここでは分岐しない。
+    `break_inside` は現在 "avoid_row" しか取れない。`Table` は生成時に他の値を拒否するが、
+    可変なので生成後に書き換えられうる。黙って avoid_row として扱わないよう、ここでも拒否する。
     """
+    if table.break_inside != "avoid_row":
+        raise ValueError(f"未対応の break_inside: {table.break_inside!r}(現在は 'avoid_row' のみ)")
     _, printable_height = _printable_size_pt(page)
     available = printable_height - (_header_height_pt() if table.repeat_header else 0.0)
 

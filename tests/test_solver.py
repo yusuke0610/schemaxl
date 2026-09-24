@@ -203,6 +203,16 @@ def test_break_inside_auto_is_rejected_instead_of_silently_ignored() -> None:
         Table(break_inside="auto")  # type: ignore[arg-type]
 
 
+def test_break_inside_mutated_after_construction_is_rejected_by_the_solver() -> None:
+    # Table は可変。生成後に書き換えられた未対応の値も、黙って avoid_row 扱いにしない。
+    from schemaxl.core.solver import resolve_page_breaks
+
+    table = _one_col_table()
+    table.break_inside = "auto"  # type: ignore[assignment]
+    with pytest.raises(ValueError, match="break_inside"):
+        resolve_page_breaks(table, {0: 10.0}, PAGE)
+
+
 # --- 第5段: solve / PlacementPlan ----------------------------------------
 
 

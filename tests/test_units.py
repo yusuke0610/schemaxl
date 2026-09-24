@@ -132,3 +132,10 @@ def test_addition_of_many_lengths_accumulates() -> None:
     total = sum((pt(10), pt(20), pt(5)), pt(0))
     assert total.to_pt() == pytest.approx(35.0)
     assert not math.isnan(total.to_pt())
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf")])
+def test_non_finite_lengths_are_rejected(value: float) -> None:
+    # NaN は自分自身と等しくならず set / dict のキーとして壊れる。無限大も長さではない。
+    with pytest.raises(ValueError, match="有限"):
+        mm(value)
