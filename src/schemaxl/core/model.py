@@ -101,6 +101,14 @@ class Table:
 
     def __post_init__(self) -> None:
         # 型を狭めても mypy を通さない利用者には届かない。黙って無視せず生成時に拒否する。
+        self.validate()
+
+    def validate(self) -> None:
+        """未対応の設定を ValueError で拒否する。
+
+        `Table` は可変なので、生成後の代入(`table.break_inside = "auto"`)は
+        `__post_init__` を通らない。solver も境界でこれを呼び直す。
+        """
         if self.break_inside != "avoid_row":
             raise ValueError(
                 f"未対応の break_inside: {self.break_inside!r}(現在は 'avoid_row' のみ)"

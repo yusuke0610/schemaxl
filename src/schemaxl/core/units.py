@@ -10,6 +10,7 @@ solver が openpyxl バックエンドへ渡す際は、さらに「Excel の列
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 # 1 inch = 25.4 mm = 72 pt。この 2 つの定義から他の係数を導く。
@@ -53,6 +54,9 @@ class Length:
             raise ValueError(f"未知の単位: {self.unit!r}(mm または pt)")
         if self.value < 0:
             raise ValueError(f"長さに負値は指定できない: {self.value}{self.unit}")
+        # NaN は自身と等しくならず、ハッシュ可能な値オブジェクトの前提を壊す。inf も長さではない。
+        if not math.isfinite(self.value):
+            raise ValueError(f"長さには有限値を指定する: {self.value}{self.unit}")
 
     def to_pt(self) -> float:
         """ポイントへ変換する。"""

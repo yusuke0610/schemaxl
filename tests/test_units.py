@@ -75,6 +75,15 @@ def test_negative_points_raise_value_error() -> None:
         pt(-0.5)
 
 
+@pytest.mark.parametrize("value", [math.nan, math.inf])
+def test_non_finite_lengths_raise_value_error(value: float) -> None:
+    # NaN は自身と等しくならず、set / dict のキーとして引けなくなる。inf も長さではない。
+    with pytest.raises(ValueError, match="有限値"):
+        mm(value)
+    with pytest.raises(ValueError, match="有限値"):
+        pt(value)
+
+
 # --- 比較・加算(改ページ計算での累積のため)-----------------------------
 
 
